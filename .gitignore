@@ -205,4 +205,13 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Celery
+celerybeat-schedule
+
+# Flash attention build artifacts
+flash-attention/build/
+flash-attention/dist/
+flash-attention/*.egg-info/
+.gitignore
 .claude
