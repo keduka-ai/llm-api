@@ -1,0 +1,108 @@
+networks:
+  phi3m_network:
+    name: phi3m_network
+
+
+services:
+  phi3m:
+    build:
+      context: ./
+      dockerfile: Dockerfile-dev
+    expose:
+      - 8000
+    networks:
+      - phi3m_network
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+    environment:
+      - LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/local/cuda/extras/CUPTI/lib64:$LD_LIBRARY_PATH
+      - NVIDIA_VISIBLE_DEVICES=all  # Use all available GPUs
+    runtime: nvidia  # Specify the NVIDIA runtime
+    env_file:
+      - .env
+    volumes:
+      - ./:/app  
+
+  # phi3m1:
+  #   build: ./
+  #   expose:
+  #     - 8000
+  #   networks:
+  #     - phi3m_network
+  #   restart: unless-stopped
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - capabilities: [gpu]
+  #   environment:
+  #     - NVIDIA_VISIBLE_DEVICES=1  # Use all available GPUs
+  #   runtime: nvidia  # Specify the NVIDIA runtime
+  #   env_file:
+  #     - .env
+  #   volumes:
+  #     - ./:/app  
+
+  sys_agent:
+    build:
+      context: /home/samusachi/WorkStation/ai-services/agents/sys-agent/src
+      dockerfile: Dockerfile
+    networks:
+      - phi3m_network
+    restart: unless-stopped
+    depends_on:
+      - phi3m
+    volumes:
+      - /home/samusachi/WorkStation/ai-services/agents/sys-agent/src/:/app
+    ports:
+      - 9001:8000
+
+  py_agent:
+    build:
+      context: /home/samusachi/WorkStation/ai-services/agents/py-agent/src
+      dockerfile: Dockerfile
+    networks:
+      - phi3m_network
+    restart: unless-stopped
+    depends_on:
+      - phi3m
+      # - sys_agent
+    volumes:
+      - /home/samusachi/WorkStation/ai-services/agents/py-agent/src/:/app
+    ports:
+      - 9002:8000
+
+  nginx:
+    build: ./nginx
+    ports:
+      - 8001:80
+    restart: unless-stopped
+    networks:
+      - phi3m_network
+    depends_on: 
+      - phi3m
+      # - phi3m1
+    healthcheck:
+      test: ["CMD-SHELL", "nginx -t"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # pgadmin:
+  #   image: dpage/pgadmin4
+  #   # environment:
+  #   #   PGADMIN_DEFAULT_EMAIL: admin@admin.com
+  #   #   PGADMIN_DEFAULT_PASSWORD: admin
+  #   env_file:
+  #     - ./.env
+  #   ports:
+  #     - "2389:80"
+  #   restart: unless-stopped
+  #   depends_on:
+  #     - math_agent_db
+  #   networks:
+  #     - math_agent_network

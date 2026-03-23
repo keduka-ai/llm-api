@@ -1,0 +1,50 @@
+Django
+djangorestframework
+djangorestframework-simplejwt
+djangorestframework-xml
+djoser
+drf-yasg
+django-prometheus
+daphne[http2,tls]
+gradio
+debugpy
+matplotlib
+# flash_attn==2.5.8
+# numpy==1.24.4
+numpy
+Pillow
+Requests
+torch
+torchvision
+transformers
+bitsandbytes 
+python-dotenv
+gunicorn
+scikit-build-core 
+cmake 
+ninja
+dill
+psycopg2-binary
+# git+https://github.com/huggingface/transformers
+pdfplumber
+pytesseract
+unstructured.pytesseract
+pdf2image
+django-countries
+# faiss-gpu
+pi-heif
+tensorboard
+colorama
+polars
+selenium
+webdriver-manager
+googlesearch-python
+twisted[http2,tls]
+ray[data,train,tune,serve,default,rllib]
+validators
+python-decouple
+uvicorn
+fastapi
+pydantic-settings
+sse-starlette
+starlette-context
