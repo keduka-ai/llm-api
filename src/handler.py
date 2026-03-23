@@ -22,6 +22,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger("runpod-handler")
 
+
+def _log_with_job(level: str, job_id: str, msg: str, *args, **kwargs):
+    """Log a message prefixed with the job ID for traceability."""
+    getattr(logger, level)(f"[job={job_id}] {msg}", *args, **kwargs)
+
 # ---------------------------------------------------------------------------
 # Per-model defaults (mirrors config.MODEL_CONFIG)
 # ---------------------------------------------------------------------------
@@ -116,6 +121,11 @@ def _load_model() -> Llama:
     llm = Llama(**kwargs)
     elapsed = time.time() - start
     logger.info("Model loaded in %.2f seconds.", elapsed)
+
+    # Log model memory footprint if available
+    model_size_mb = os.path.getsize(model_path) / (1024 * 1024)
+    logger.info("Model file size: %.1f MB", model_size_mb)
+
     return llm
 
 
@@ -151,6 +161,48 @@ def _strip_think_tags(text: str) -> str:
 # Handler
 # ---------------------------------------------------------------------------
 
+def _validate_messages(messages: list) -> str | None:
+    """Validate the messages list format. Returns an error message or None."""
+    if not isinstance(messages, list):
+        return "'messages' must be a list"
+    if len(messages) == 0:
+        return "'messages' must not be empty"
+    for i, msg in enumerate(messages):
+        if not isinstance(msg, dict):
+            return f"messages[{i}] must be a dict, got {type(msg).__name__}"
+        if "role" not in msg:
+            return f"messages[{i}] missing required field 'role'"
+        if "content" not in msg:
+            return f"messages[{i}] missing required field 'content'"
+        if msg["role"] not in ("system", "user", "assistant"):
+            return f"messages[{i}] has invalid role '{msg['role']}'"
+    return None
+
+
+def _validate_generation_params(job_input: dict) -> str | None:
+    """Validate generation parameter types and ranges. Returns an error message or None."""
+    try:
+        if "max_tokens" in job_input:
+            val = int(job_input["max_tokens"])
+            if val <= 0:
+                return "'max_tokens' must be a positive integer"
+        if "temperature" in job_input:
+            val = float(job_input["temperature"])
+            if val < 0:
+                return "'temperature' must be non-negative"
+        if "top_p" in job_input:
+            val = float(job_input["top_p"])
+            if not (0.0 < val <= 1.0):
+                return "'top_p' must be in (0.0, 1.0]"
+        if "repeat_penalty" in job_input:
+            val = float(job_input["repeat_penalty"])
+            if val <= 0:
+                return "'repeat_penalty' must be positive"
+    except (ValueError, TypeError) as e:
+        return f"Invalid parameter type: {e}"
+    return None
+
+
 def handler(job: dict) -> dict:
     """
     RunPod serverless handler.
@@ -166,10 +218,15 @@ def handler(job: dict) -> dict:
     Returns OpenAI-compatible response for chat input, or {"response": text}
     for text-prompt input.
     """
+    job_id = job.get("id", "unknown")
+
     try:
         job_input = job.get("input", {})
         if not job_input:
+            _log_with_job("warning", job_id, "Received empty job input")
             return {"error": {"message": "Empty job input", "type": "invalid_request_error"}}
+
+        _log_with_job("info", job_id, "Job received (keys: %s)", list(job_input.keys()))
 
         # -----------------------------------------------------------
         # Determine input style
@@ -179,12 +236,27 @@ def handler(job: dict) -> dict:
         is_text_prompt = messages is None and prompt is not None
 
         if messages is None and prompt is None:
+            _log_with_job("warning", job_id, "Missing 'messages' and 'prompt'")
             return {
                 "error": {
                     "message": "Missing required parameter: 'messages' or 'prompt'",
                     "type": "invalid_request_error",
                 }
             }
+
+        # -----------------------------------------------------------
+        # Validate inputs
+        # -----------------------------------------------------------
+        if messages is not None:
+            msg_error = _validate_messages(messages)
+            if msg_error:
+                _log_with_job("warning", job_id, "Invalid messages: %s", msg_error)
+                return {"error": {"message": msg_error, "type": "invalid_request_error"}}
+
+        param_error = _validate_generation_params(job_input)
+        if param_error:
+            _log_with_job("warning", job_id, "Invalid parameters: %s", param_error)
+            return {"error": {"message": param_error, "type": "invalid_request_error"}}
 
         # For text-prompt style, build a messages list
         if is_text_prompt:
@@ -234,11 +306,25 @@ def handler(job: dict) -> dict:
         # -----------------------------------------------------------
         # Inference
         # -----------------------------------------------------------
-        logger.info("Running inference (mode=%s, model_label=%s, max_tokens=%d)", RUNPOD_MODE, model_label, max_tokens)
+        _log_with_job(
+            "info", job_id,
+            "Running inference (mode=%s, model=%s, max_tokens=%d, temp=%.4f, n_messages=%d)",
+            RUNPOD_MODE, model_label, max_tokens, temperature, len(messages),
+        )
         start = time.time()
         result = llm.create_chat_completion(**create_kwargs)
         elapsed = time.time() - start
-        logger.info("Inference completed in %.2f seconds.", elapsed)
+
+        # Log token usage
+        usage = result.get("usage", {})
+        _log_with_job(
+            "info", job_id,
+            "Inference completed in %.2fs (prompt_tokens=%s, completion_tokens=%s, total_tokens=%s)",
+            elapsed,
+            usage.get("prompt_tokens", "n/a"),
+            usage.get("completion_tokens", "n/a"),
+            usage.get("total_tokens", "n/a"),
+        )
 
         # -----------------------------------------------------------
         # Post-process: strip thinking content when think=False
@@ -260,7 +346,7 @@ def handler(job: dict) -> dict:
             try:
                 response_text = result["choices"][0]["message"]["content"]
             except (KeyError, IndexError):
-                logger.warning("Unexpected response structure: %s", result)
+                _log_with_job("warning", job_id, "Unexpected response structure: %s", result)
                 return {"error": {"message": "Model returned no content", "type": "server_error"}}
             return {"response": response_text}
 
@@ -269,11 +355,19 @@ def handler(job: dict) -> dict:
         result["model"] = model_label
         return result
 
-    except Exception as e:
-        logger.error("Handler error: %s", str(e), exc_info=True)
+    except (ValueError, TypeError) as e:
+        _log_with_job("warning", job_id, "Bad request: %s", e, exc_info=True)
         return {
             "error": {
-                "message": f"An internal error occurred: {str(e)}",
+                "message": f"Invalid input: {e}",
+                "type": "invalid_request_error",
+            }
+        }
+    except Exception as e:
+        _log_with_job("error", job_id, "Handler error: %s", e, exc_info=True)
+        return {
+            "error": {
+                "message": f"An internal error occurred: {type(e).__name__}",
                 "type": "server_error",
             }
         }
