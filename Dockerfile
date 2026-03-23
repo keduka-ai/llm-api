@@ -10,13 +10,19 @@ ARG MODEL_URL=""
 RUN apt-get update && apt-get install -y --no-install-recommends \
     cmake \
     build-essential \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
-# Install llama-cpp-python with CUDA support (JamePeng fork for newer model support)
-RUN CMAKE_ARGS="-DGGML_CUDA=on" FORCE_CMAKE=1 \
-    pip install --no-cache-dir 'llama-cpp-python[server] @ git+https://github.com/JamePeng/llama-cpp-python.git' \
-    || CMAKE_ARGS="-DGGML_CUDA=on" FORCE_CMAKE=1 \
-    pip install --no-cache-dir 'llama-cpp-python[server]'
+# Upgrade pip first
+RUN pip install --upgrade pip setuptools wheel
+
+# Install llama-cpp-python with CUDA support
+# Try upstream PyPI first (faster, pre-built wheels available for common CUDA versions),
+# fall back to JamePeng fork built from source (supports newer model architectures).
+ENV CMAKE_ARGS="-DGGML_CUDA=on"
+ENV FORCE_CMAKE=1
+RUN pip install --no-cache-dir 'llama-cpp-python[server]' \
+    || pip install --no-cache-dir 'llama-cpp-python[server] @ git+https://github.com/JamePeng/llama-cpp-python.git'
 
 # Install RunPod and HuggingFace Hub
 COPY requirements.txt /tmp/requirements.txt
