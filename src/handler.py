@@ -8,7 +8,6 @@ then handles incoming jobs with chat-completions or text-prompt style inputs.
 import os
 import re
 import time
-import uuid
 import logging
 
 import runpod
@@ -121,7 +120,11 @@ def _load_model() -> Llama:
 
 
 # Global model instance (loaded once on cold start)
-llm = _load_model()
+try:
+    llm = _load_model()
+except Exception as e:
+    logger.critical("Failed to load model on cold start: %s", e, exc_info=True)
+    raise SystemExit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -257,7 +260,8 @@ def handler(job: dict) -> dict:
             try:
                 response_text = result["choices"][0]["message"]["content"]
             except (KeyError, IndexError):
-                response_text = ""
+                logger.warning("Unexpected response structure: %s", result)
+                return {"error": {"message": "Model returned no content", "type": "server_error"}}
             return {"response": response_text}
 
         # OpenAI-compatible response (pass through the llama-cpp result)

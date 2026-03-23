@@ -212,7 +212,10 @@ celerybeat-schedule
 # Removed directories (no longer part of project)
 flash-attention/
 config/
-ai_api/models/*.gguf
+
+# Model files (large, download at build time)
+models/
+*.gguf
 
 # Claude Code
 .claude

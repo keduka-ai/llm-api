@@ -49,7 +49,13 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Resolve Docker Hub username from docker info or prompt
+# Validate mode
+if [[ ! "$MODE" =~ ^(instruct|reasoning)$ ]]; then
+    echo "ERROR: --mode must be 'instruct' or 'reasoning', got '${MODE}'"
+    exit 1
+fi
+
+# Resolve Docker Hub username
 DOCKER_USER=$(docker info 2>/dev/null | grep "Username:" | awk '{print $2}')
 if [ -z "$DOCKER_USER" ]; then
     echo "Not logged in to Docker Hub. Please run 'docker login' first."
