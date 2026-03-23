@@ -32,12 +32,15 @@ RUN pip install --no-cache-dir -r /tmp/requirements.txt
 # Create models directory
 RUN mkdir -p /models
 
-# Download model at build time if MODEL_URL is provided
-# Supports direct download URLs (wget) — simplest and most reliable approach.
-RUN if [ -n "$MODEL_URL" ]; then \
+# Download model at build time using download script or MODEL_URL fallback
+COPY download-models.sh /tmp/download-models.sh
+RUN chmod +x /tmp/download-models.sh && \
+    if [ -n "$MODEL_URL" ]; then \
         FILENAME=$(basename "$MODEL_URL" | sed 's/?.*//')  && \
         echo "Downloading ${FILENAME} to /models/" && \
         wget -q --show-progress -O "/models/${FILENAME}" "$MODEL_URL"; \
+    else \
+        MODELS_DIR=/models /tmp/download-models.sh; \
     fi
 
 # Copy handler source
