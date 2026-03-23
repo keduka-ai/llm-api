@@ -209,9 +209,10 @@ __marimo__/
 # Celery
 celerybeat-schedule
 
-# Flash attention build artifacts
-flash-attention/build/
-flash-attention/dist/
-flash-attention/*.egg-info/
-.gitignore
+# Removed directories (no longer part of project)
+flash-attention/
+config/
+ai_api/models/*.gguf
+
+# Claude Code
 .claude

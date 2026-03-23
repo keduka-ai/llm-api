@@ -70,7 +70,7 @@ echo "========================================="
 BUILD_ARGS="--build-arg MODEL_URL=${MODEL_URL}"
 
 docker build \
-    -f Dockerfile.runpod \
+    -f Dockerfile \
     ${BUILD_ARGS} \
     -t "${IMAGE}" \
     .

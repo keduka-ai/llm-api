@@ -1,48 +1,50 @@
-# Gateway-only image: Django + gunicorn, no model inference
-ARG PYTHON_VERSION=3.10
-FROM python:${PYTHON_VERSION}-slim
+# Dockerfile for RunPod Serverless deployment
+# Provides LLM inference via llama-cpp-python with CUDA support
 
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
+FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
 
-# Install system dependencies
+# Build args
+ARG MODEL_URL=""
+
+# Install build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    cmake \
     build-essential \
-    gcc \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+    && rm -rf /var/lib/apt/lists/*
 
-# Set working directory
-WORKDIR /app
+# Install llama-cpp-python with CUDA support (JamePeng fork for newer model support)
+RUN CMAKE_ARGS="-DGGML_CUDA=on" FORCE_CMAKE=1 \
+    pip install --no-cache-dir 'llama-cpp-python[server] @ git+https://github.com/JamePeng/llama-cpp-python.git' \
+    || CMAKE_ARGS="-DGGML_CUDA=on" FORCE_CMAKE=1 \
+    pip install --no-cache-dir 'llama-cpp-python[server]'
 
-# Copy dependency files early to leverage Docker caching
-COPY requirements-latest.txt install_llama_cpp_py.sh /app/
+# Install RunPod and HuggingFace Hub
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
-# Upgrade pip and install Python dependencies (gateway only, no llama-cpp-python)
-RUN pip3 install --upgrade pip setuptools wheel && \
-    pip3 install --no-cache-dir -r requirements-latest.txt && rm -rf /root/.cache
+# Create models directory
+RUN mkdir -p /models
 
-# Create and set permissions for the zp user and group
-RUN addgroup --system zp && adduser --system --ingroup zp --disabled-login --disabled-password --gecos "" zp && \
-    mkdir -p /home/zp/logs /home/zp/models /home/zp/tokenizer && \
-    chown -R zp:zp /home/zp && \
-    chgrp zp /app && \
-    chown -R zp:zp /app && \
-    chmod -R 755 /app
+# Download model at build time if MODEL_URL is provided
+RUN if [ -n "$MODEL_URL" ]; then \
+        python -c "from huggingface_hub import hf_hub_download; import os; \
+url='$MODEL_URL'; \
+parts=url.rstrip('/').replace('https://huggingface.co/', '').split('/'); \
+repo_id='/'.join(parts[0:2]); \
+filename='/'.join(parts[4:]) if len(parts) > 4 else parts[-1]; \
+print(f'Downloading {filename} from {repo_id}'); \
+hf_hub_download(repo_id=repo_id, filename=filename, local_dir='/models')"; \
+    fi
 
+# Copy handler source
+COPY src/ /workspace/src/
 
-# Set environment variables
-ENV DJANGO_SETTINGS_MODULE=project.settings
+# Environment variables
+ENV RUNPOD_MODE=instruct \
+    MODELS_DIR=/models \
+    N_GPU_LAYERS=-1 \
+    FLASH_ATTN=1
 
-# Expose the ports Daphne will run on
-EXPOSE 8000 5678
+WORKDIR /workspace
 
-# Switch to non-root user
-USER zp
-
-# Copy entry point script and ensure it is executable
-COPY --chown=zp:zp entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
-
-# Run entry point script
-ENTRYPOINT ["/entrypoint.sh"]
+CMD ["python", "-u", "src/handler.py"]
