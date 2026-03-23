@@ -31,30 +31,156 @@ docker login
 
 ### 3. Send requests
 
-```bash
-# Chat completions (OpenAI-compatible)
-curl -X POST https://api.runpod.ai/v2/<endpoint-id>/runsync \
-  -H 'Authorization: Bearer <RUNPOD_API_KEY>' \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "input": {
-      "messages": [{"role": "user", "content": "Write a Python function to sort a list."}],
-      "max_tokens": 2048,
-      "temperature": 0.7
-    }
-  }'
+#### Run (async)
 
-# Text prompt (simple format)
-curl -X POST https://api.runpod.ai/v2/<endpoint-id>/runsync \
-  -H 'Authorization: Bearer <RUNPOD_API_KEY>' \
-  -H 'Content-Type: application/json' \
-  -d '{
+```bash
+curl -X POST https://api.runpod.ai/v2/${RUNPOD_ENDPOINT_ID}/run \
+    -H 'Content-Type: application/json' \
+    -H 'Authorization: Bearer YOUR_API_KEY' \
+    -d '{"input":{"prompt":"Your prompt"}}'
+```
+
+**Response:**
+
+```json
+{
+  "id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "status": "IN_QUEUE"
+}
+```
+
+#### Check status
+
+```bash
+curl https://api.runpod.ai/v2/${RUNPOD_ENDPOINT_ID}/status/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx \
+    -H 'Authorization: Bearer YOUR_API_KEY'
+```
+
+#### RunSync (synchronous)
+
+```bash
+curl -X POST https://api.runpod.ai/v2/${RUNPOD_ENDPOINT_ID}/runsync \
+    -H 'Content-Type: application/json' \
+    -H 'Authorization: Bearer YOUR_API_KEY' \
+    -d '{"input":{"prompt":"Your prompt"}}'
+```
+
+#### Chat completions (OpenAI-compatible)
+
+```bash
+curl -X POST https://api.runpod.ai/v2/${RUNPOD_ENDPOINT_ID}/runsync \
+    -H 'Content-Type: application/json' \
+    -H 'Authorization: Bearer YOUR_API_KEY' \
+    -d '{
+      "input": {
+        "messages": [{"role": "user", "content": "Write a Python function to sort a list."}],
+        "max_tokens": 2048,
+        "temperature": 0.7
+      }
+    }'
+```
+
+### Python examples
+
+Create a `.env` file with your credentials:
+
+```bash
+RUNPOD_API_KEY=your_api_key_here
+RUNPOD_ENDPOINT_ID=your_endpoint_id_here
+```
+
+#### Async request with polling
+
+```python
+import os
+import requests
+import time
+from dotenv import load_dotenv
+
+load_dotenv()
+
+API_KEY = os.environ["RUNPOD_API_KEY"]
+ENDPOINT_ID = os.environ["RUNPOD_ENDPOINT_ID"]
+BASE_URL = f"https://api.runpod.ai/v2/{ENDPOINT_ID}"
+HEADERS = {
+    "Content-Type": "application/json",
+    "Authorization": f"Bearer {API_KEY}",
+}
+
+# Submit async job
+response = requests.post(f"{BASE_URL}/run", headers=HEADERS, json={
     "input": {
-      "prompt": "Explain recursion in simple terms.",
-      "system_prompt": "You are a helpful coding assistant.",
-      "max_tokens": 2048
+        "messages": [{"role": "user", "content": "Write a Python function to sort a list."}],
+        "max_tokens": 2048,
+        "temperature": 0.7,
     }
-  }'
+})
+job_id = response.json()["id"]
+print(f"Job submitted: {job_id}")
+
+# Poll for result
+while True:
+    status = requests.get(f"{BASE_URL}/status/{job_id}", headers=HEADERS).json()
+    if status["status"] == "COMPLETED":
+        print(status["output"])
+        break
+    elif status["status"] == "FAILED":
+        print(f"Job failed: {status}")
+        break
+    time.sleep(1)
+```
+
+#### Synchronous request
+
+```python
+import os
+import requests
+from dotenv import load_dotenv
+
+load_dotenv()
+
+API_KEY = os.environ["RUNPOD_API_KEY"]
+ENDPOINT_ID = os.environ["RUNPOD_ENDPOINT_ID"]
+
+response = requests.post(
+    f"https://api.runpod.ai/v2/{ENDPOINT_ID}/runsync",
+    headers={
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {API_KEY}",
+    },
+    json={
+        "input": {
+            "prompt": "Explain recursion in simple terms.",
+            "max_tokens": 2048,
+        }
+    },
+)
+print(response.json())
+```
+
+#### Using the RunPod SDK
+
+```python
+import os
+from dotenv import load_dotenv
+import runpod
+
+load_dotenv()
+
+runpod.api_key = os.environ["RUNPOD_API_KEY"]
+endpoint = runpod.Endpoint(os.environ["RUNPOD_ENDPOINT_ID"])
+
+# Async
+run = endpoint.run({"input": {
+    "messages": [{"role": "user", "content": "Write a Python function to sort a list."}],
+    "max_tokens": 2048,
+}})
+output = run.output()  # blocks until complete
+print(output)
+
+# Sync
+output = endpoint.run_sync({"input": {"prompt": "Explain recursion.", "max_tokens": 2048}})
+print(output)
 ```
 
 ## Input Parameters
