@@ -5,6 +5,10 @@ FROM ghcr.io/ggml-org/llama.cpp:server-cuda
 
 USER root
 
+# Ensure llama.cpp shared libs (libmtmd.so etc.) are discoverable
+RUN ldconfig /app 2>/dev/null; true
+ENV LD_LIBRARY_PATH="/app:${LD_LIBRARY_PATH}"
+
 # Build args
 ARG MODEL_URL=""
 
