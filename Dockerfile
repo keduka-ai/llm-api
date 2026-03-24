@@ -15,11 +15,26 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN pip install --upgrade pip setuptools wheel
 
-# Install llama-cpp-python with CUDA support via source build.
-# Force cmake to enable CUDA so GPU offloading is guaranteed.
-RUN CMAKE_ARGS="-DGGML_CUDA=on" FORCE_CMAKE=1 \
-    pip install --no-cache-dir \
-    'llama-cpp-python[server] @ git+https://github.com/JamePeng/llama-cpp-python.git@f513aab'
+# Install llama-cpp-python with CUDA support.
+# Try pre-built CUDA 12.4 wheel first (fast); fall back to source build.
+RUN pip install --no-cache-dir \
+    'llama-cpp-python[server]==0.3.17' \
+    --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124 \
+    || (CMAKE_ARGS="-DGGML_CUDA=on" FORCE_CMAKE=1 \
+        pip install --no-cache-dir 'llama-cpp-python[server]==0.3.17')
+
+# Fail the build if CUDA support is missing
+# Fail build if CUDA support is missing from llama-cpp-python
+RUN python -c "\
+from llama_cpp import Llama; \
+assert Llama.supports_gpu_offload(), 'llama-cpp-python built WITHOUT CUDA'; \
+print('OK: llama-cpp-python CUDA support verified')"
+
+# Verify CUDA toolkit is accessible
+RUN python -c "\
+import ctypes; \
+cuda = ctypes.CDLL('libcuda.so.1'); \
+print('OK: libcuda.so.1 loaded successfully')"
 
 # Install RunPod and HuggingFace Hub (pinned in requirements.txt)
 COPY requirements.txt /tmp/requirements.txt
