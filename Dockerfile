@@ -15,13 +15,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN pip install --upgrade pip setuptools wheel
 
-# Install llama-cpp-python with CUDA support.
-# Try pre-built CUDA 12.4 wheel first (fast); fall back to source build.
-RUN pip install --no-cache-dir \
-    'llama-cpp-python[server]==0.3.17' \
-    --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124 \
-    || (CMAKE_ARGS="-DGGML_CUDA=on" FORCE_CMAKE=1 \
-        pip install --no-cache-dir 'llama-cpp-python[server]==0.3.17')
+# Install llama-cpp-python with CUDA support via source build.
+# Pre-built wheels from cu124 index are CPU-only, so force source compilation.
+RUN CMAKE_ARGS="-DGGML_CUDA=on" FORCE_CMAKE=1 \
+    pip install --no-cache-dir --no-binary llama-cpp-python \
+    'llama-cpp-python[server]==0.3.17'
 
 # Fail the build if CUDA support is missing
 # Fail build if CUDA support is missing from llama-cpp-python
