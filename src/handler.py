@@ -65,8 +65,17 @@ MAIN_GPU = int(os.environ.get("MAIN_GPU", 0))
 _tensor_split_raw = os.environ.get("TENSOR_SPLIT", "")
 TENSOR_SPLIT = [float(x) for x in _tensor_split_raw.split(",") if x.strip()] or None
 
-DEFAULT_SYSTEM_PROMPT = "You are a highly knowledgeable, kind, and helpful assistant."
-DEFAULT_GENERATION_MAX_TOKENS = 75_000
+DEFAULT_SYSTEM_PROMPT = os.environ.get(
+    "DEFAULT_SYSTEM_PROMPT",
+    "You are a highly knowledgeable, kind, and helpful assistant.",
+)
+
+# --- Generation limits (all configurable via env / .env.example) ---
+MAX_GENERATION_TOKENS = int(os.environ.get("MAX_GENERATION_TOKENS", 75_000))
+DEFAULT_MAX_TOKENS = int(os.environ.get("DEFAULT_MAX_TOKENS", 4096))
+MAX_MESSAGES = int(os.environ.get("MAX_MESSAGES", 256))
+MAX_CONTENT_LENGTH = int(os.environ.get("MAX_CONTENT_LENGTH", 500_000))
+MAX_STOP_SEQUENCES = int(os.environ.get("MAX_STOP_SEQUENCES", 16))
 
 # ---------------------------------------------------------------------------
 # Cold-start: load model
@@ -89,8 +98,8 @@ def _load_model() -> Llama:
 
     # Resolve per-model overrides from MODEL_CONFIG
     cfg = MODEL_CONFIG.get(model_filename, {})
-    n_ctx = int(os.environ.get("N_CTX", cfg.get("n_ctx", DEFAULT_N_CTX.get(RUNPOD_MODE, 20_000))))
-    n_ubatch = int(os.environ.get("N_UBATCH", cfg.get("n_ubatch", N_BATCH)))
+    n_ctx = int(os.environ.get("N_CTX") or cfg.get("n_ctx") or DEFAULT_N_CTX.get(RUNPOD_MODE, 20_000))
+    n_ubatch = int(os.environ.get("N_UBATCH") or cfg.get("n_ubatch") or N_BATCH)
     chat_format = cfg.get("chat_format")  # None lets llama-cpp auto-detect
 
     logger.info(
@@ -117,6 +126,9 @@ def _load_model() -> Llama:
     if chat_format is not None:
         kwargs["chat_format"] = chat_format
 
+    # Enable verbose temporarily to capture backend info in logs
+    kwargs["verbose"] = True
+
     start = time.time()
     llm = Llama(**kwargs)
     elapsed = time.time() - start
@@ -125,6 +137,22 @@ def _load_model() -> Llama:
     # Log model memory footprint if available
     model_size_mb = os.path.getsize(model_path) / (1024 * 1024)
     logger.info("Model file size: %.1f MB", model_size_mb)
+
+    # Verify GPU offloading
+    try:
+        supports_gpu = Llama.supports_gpu_offload() if hasattr(Llama, "supports_gpu_offload") else None
+        if supports_gpu is not None:
+            logger.info("GPU offload supported by llama.cpp build: %s", supports_gpu)
+            if not supports_gpu and N_GPU_LAYERS != 0:
+                logger.warning(
+                    "n_gpu_layers=%d requested but this llama-cpp-python build has NO GPU support! "
+                    "Model is running on CPU only. Rebuild with CUDA support.",
+                    N_GPU_LAYERS,
+                )
+        else:
+            logger.info("Could not determine GPU offload support (older llama-cpp-python version)")
+    except Exception as e:
+        logger.warning("Could not check GPU offload support: %s", e)
 
     return llm
 
@@ -167,6 +195,9 @@ def _validate_messages(messages: list) -> str | None:
         return "'messages' must be a list"
     if len(messages) == 0:
         return "'messages' must not be empty"
+    if len(messages) > MAX_MESSAGES:
+        return f"'messages' must not exceed {MAX_MESSAGES} entries"
+    total_content_length = 0
     for i, msg in enumerate(messages):
         if not isinstance(msg, dict):
             return f"messages[{i}] must be a dict, got {type(msg).__name__}"
@@ -176,6 +207,11 @@ def _validate_messages(messages: list) -> str | None:
             return f"messages[{i}] missing required field 'content'"
         if msg["role"] not in ("system", "user", "assistant"):
             return f"messages[{i}] has invalid role '{msg['role']}'"
+        content = msg.get("content", "")
+        if isinstance(content, str):
+            total_content_length += len(content)
+    if total_content_length > MAX_CONTENT_LENGTH:
+        return f"Total message content must not exceed {MAX_CONTENT_LENGTH} characters"
     return None
 
 
@@ -186,6 +222,8 @@ def _validate_generation_params(job_input: dict) -> str | None:
             val = int(job_input["max_tokens"])
             if val <= 0:
                 return "'max_tokens' must be a positive integer"
+            if val > MAX_GENERATION_TOKENS:
+                return f"'max_tokens' must not exceed {MAX_GENERATION_TOKENS}"
         if "temperature" in job_input:
             val = float(job_input["temperature"])
             if val < 0:
@@ -198,6 +236,15 @@ def _validate_generation_params(job_input: dict) -> str | None:
             val = float(job_input["repeat_penalty"])
             if val <= 0:
                 return "'repeat_penalty' must be positive"
+        if "stop" in job_input:
+            stop_val = job_input["stop"]
+            if isinstance(stop_val, str):
+                pass
+            elif isinstance(stop_val, list):
+                if not all(isinstance(s, str) for s in stop_val):
+                    return "'stop' list must contain only strings"
+            else:
+                return "'stop' must be a string or list of strings"
     except (ValueError, TypeError) as e:
         return f"Invalid parameter type: {e}"
     return None
@@ -260,6 +307,9 @@ def handler(job: dict) -> dict:
 
         # For text-prompt style, build a messages list
         if is_text_prompt:
+            if not isinstance(prompt, str) or len(prompt) > MAX_CONTENT_LENGTH:
+                _log_with_job("warning", job_id, "Prompt too long or invalid type")
+                return {"error": {"message": f"'prompt' must be a string not exceeding {MAX_CONTENT_LENGTH} characters", "type": "invalid_request_error"}}
             system_prompt_content = job_input.get("system_prompt", DEFAULT_SYSTEM_PROMPT)
             full_prompt = f"{system_prompt_content}\n\n{prompt}"
             messages = [{"role": "user", "content": full_prompt}]
@@ -267,7 +317,7 @@ def handler(job: dict) -> dict:
         # -----------------------------------------------------------
         # Generation parameters
         # -----------------------------------------------------------
-        max_tokens = int(job_input.get("max_tokens", DEFAULT_GENERATION_MAX_TOKENS))
+        max_tokens = int(job_input.get("max_tokens", DEFAULT_MAX_TOKENS))
         temperature = float(job_input.get("temperature", 0.00005))
         top_p = float(job_input.get("top_p", 1.0))
         repeat_penalty = float(job_input.get("repeat_penalty", 1.2))
@@ -301,7 +351,11 @@ def handler(job: dict) -> dict:
             if isinstance(stop_val, str):
                 create_kwargs["stop"] = [stop_val]
             else:
-                create_kwargs["stop"] = list(stop_val)
+                stop_list = list(stop_val)
+                if len(stop_list) > MAX_STOP_SEQUENCES:
+                    _log_with_job("warning", job_id, "Too many stop sequences: %d", len(stop_list))
+                    return {"error": {"message": f"'stop' must not exceed {MAX_STOP_SEQUENCES} entries", "type": "invalid_request_error"}}
+                create_kwargs["stop"] = stop_list
 
         # -----------------------------------------------------------
         # Inference
@@ -359,7 +413,7 @@ def handler(job: dict) -> dict:
         _log_with_job("warning", job_id, "Bad request: %s", e, exc_info=True)
         return {
             "error": {
-                "message": f"Invalid input: {e}",
+                "message": "Invalid input: check parameter types and values",
                 "type": "invalid_request_error",
             }
         }
@@ -367,7 +421,7 @@ def handler(job: dict) -> dict:
         _log_with_job("error", job_id, "Handler error: %s", e, exc_info=True)
         return {
             "error": {
-                "message": f"An internal error occurred: {type(e).__name__}",
+                "message": "An internal error occurred",
                 "type": "server_error",
             }
         }

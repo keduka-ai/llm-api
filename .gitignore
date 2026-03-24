@@ -205,17 +205,4 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
-
-# Celery
-celerybeat-schedule
-
-# Removed directories (no longer part of project)
-flash-attention/
-config/
-
-# Model files (large, download at build time)
-models/
-*.gguf
-
-# Claude Code
 .claude

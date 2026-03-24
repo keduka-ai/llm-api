@@ -194,7 +194,7 @@ class TestHandlerChatCompletions:
         _mock_llm_instance.create_chat_completion.return_value = _make_response("ok")
         handler({"input": {"messages": [{"role": "user", "content": "Hi"}]}})
         kw = _mock_llm_instance.create_chat_completion.call_args[1]
-        assert kw["max_tokens"] == 75_000
+        assert kw["max_tokens"] == 4096
         assert kw["temperature"] == 0.00005
         assert kw["top_p"] == 1.0
         assert kw["repeat_penalty"] == 1.2
@@ -266,9 +266,32 @@ class TestHandlerErrors:
     def test_inference_exception(self):
         _mock_llm_instance.create_chat_completion.side_effect = RuntimeError("GPU OOM")
         result = handler({"input": {"messages": [{"role": "user", "content": "Hi"}]}})
-        assert "GPU OOM" in result["error"]["message"]
         assert result["error"]["type"] == "server_error"
+        # Error message should NOT leak internal details
+        assert "GPU OOM" not in result["error"]["message"]
         _mock_llm_instance.create_chat_completion.side_effect = None
+
+    def test_max_tokens_exceeds_limit(self):
+        result = handler({"input": {
+            "messages": [{"role": "user", "content": "Hi"}],
+            "max_tokens": 999_999_999,
+        }})
+        assert result["error"]["type"] == "invalid_request_error"
+        assert "exceed" in result["error"]["message"]
+
+    def test_stop_non_string_items_rejected(self):
+        result = handler({"input": {
+            "messages": [{"role": "user", "content": "Hi"}],
+            "stop": [123, None],
+        }})
+        assert result["error"]["type"] == "invalid_request_error"
+        assert "stop" in result["error"]["message"]
+
+    def test_too_many_messages_rejected(self):
+        msgs = [{"role": "user", "content": "Hi"}] * 300
+        result = handler({"input": {"messages": msgs}})
+        assert result["error"]["type"] == "invalid_request_error"
+        assert "exceed" in result["error"]["message"].lower()
 
 
 # ===================================================================
@@ -305,7 +328,7 @@ class TestLoadModel:
         assert kw["model_path"] == _FAKE_MODEL
         assert kw["n_gpu_layers"] == 0
         assert kw["flash_attn"] is False
-        assert kw["verbose"] is False
+        assert kw["verbose"] is True
 
 
 # ===================================================================

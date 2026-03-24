@@ -73,11 +73,9 @@ echo "  Model URL: ${MODEL_URL:-<none, will download at runtime>}"
 echo "========================================="
 
 # Build
-BUILD_ARGS="--build-arg MODEL_URL=${MODEL_URL}"
-
 docker build \
     -f Dockerfile \
-    ${BUILD_ARGS} \
+    --build-arg "MODEL_URL=${MODEL_URL}" \
     -t "${IMAGE}" \
     .
 

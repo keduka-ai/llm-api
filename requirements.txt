@@ -1,2 +1,2 @@
-runpod
-huggingface_hub
+runpod==1.8.1
+huggingface_hub==1.7.2
