@@ -1,23 +1,47 @@
 # LLM API — RunPod Serverless
 
-RunPod serverless endpoint for LLM inference using llama-cpp-python with CUDA. Supports instruct and reasoning models via an OpenAI-compatible interface.
+RunPod serverless endpoint for LLM inference powered by the official [llama.cpp](https://github.com/ggml-org/llama.cpp) CUDA server. Supports instruct and reasoning models via an OpenAI-compatible interface, switchable at deploy time with a single environment variable.
 
 ## Table of Contents
 
+- [Architecture](#architecture)
 - [Quick Start](#quick-start)
 - [Configuration](#configuration)
   - [Environment Variables](#environment-variables)
-  - [Per-Model Configuration](#per-model-configuration)
 - [Deploy on RunPod](#deploy-on-runpod)
   - [Build the Docker Image](#1-build-the-docker-image)
   - [Create a RunPod Endpoint](#2-create-a-runpod-endpoint)
+- [Switching Between Instruct and Reasoning](#switching-between-instruct-and-reasoning)
 - [API Usage](#api-usage)
   - [Input Styles](#input-styles)
   - [Generation Parameters](#generation-parameters)
   - [curl Examples](#curl-examples)
   - [Python Examples](#python-examples)
+- [Testing](#testing)
 - [Logging](#logging)
 - [Project Structure](#project-structure)
+
+---
+
+## Architecture
+
+```text
+┌─────────────────────────────────────────────────────┐
+│  Docker container  (ghcr.io/ggml-org/llama.cpp)     │
+│                                                     │
+│  ┌──────────────┐   HTTP :8080   ┌───────────────┐  │
+│  │ RunPod       │ ─────────────▶ │ llama-server  │  │
+│  │ handler.py   │   /v1/chat/    │ (native C++)  │  │
+│  │              │   completions  │               │  │
+│  └──────────────┘                └───────────────┘  │
+│        │                               │            │
+│   RunPod API                      GPU (CUDA)        │
+└─────────────────────────────────────────────────────┘
+```
+
+- **Base image**: `ghcr.io/ggml-org/llama.cpp:server-cuda` — the official llama.cpp CUDA server with up-to-date model support (Qwen3.5, Phi-4, etc.)
+- **Handler** (`src/handler.py`): a RunPod serverless handler that validates requests, proxies them to the local llama-server via HTTP, and post-processes responses (think-tag stripping, format normalization)
+- **Entrypoint** (`entrypoint.sh`): starts llama-server with the correct model and flags based on `RUNPOD_MODE`, then launches the handler
 
 ---
 
@@ -53,29 +77,21 @@ Copy `env.example` to `.env` and adjust values as needed. All variables have sen
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `RUNPOD_MODE` | `instruct` | Operating mode: `instruct` or `reasoning` |
+| `RUNPOD_MODE` | `instruct` | Operating mode: `instruct` or `reasoning`. Controls which model is loaded and which llama-server flags are used |
 | `INSTRUCT_MODEL` | `Qwen3.5-4B-Q4_1.gguf` | Filename of the instruct model (must be in `MODELS_DIR`) |
 | `REASONING_MODEL` | `Phi-4-mini-reasoning-UD-Q8_K_XL.gguf` | Filename of the reasoning model (must be in `MODELS_DIR`) |
 | `MODELS_DIR` | `/models` | Directory containing GGUF model files |
+| `REASONING_FORMAT` | `deepseek` | Reasoning format passed to `--reasoning-format` in reasoning mode |
 
-#### GPU Configuration
+#### GPU & Server Configuration
 
 | Variable | Default | Description |
 | --- | --- | --- |
 | `N_GPU_LAYERS` | `-1` | Number of layers to offload to GPU. `-1` = all layers |
-| `MAIN_GPU` | `0` | Primary GPU index (for multi-GPU setups) |
-| `TENSOR_SPLIT` | _(empty)_ | Multi-GPU split ratios, comma-separated (e.g. `0.5,0.5`) |
-| `FLASH_ATTN` | `1` | Enable flash attention. `1` = on, `0` = off |
-| `USE_MMAP` | `1` | Memory-map the model file. `1` = on, `0` = off |
-| `USE_MLOCK` | `1` | Lock model in RAM to prevent swapping. `1` = on, `0` = off |
-
-#### Inference Performance
-
-| Variable | Default | Description |
-| --- | --- | --- |
+| `FLASH_ATTN_MODE` | `on` | Flash attention mode: `on`, `off`, or `auto` |
+| `N_CTX` | `20000` | Context window size |
 | `N_BATCH` | `512` | Prompt processing batch size |
-| `N_CTX` | _(per-model)_ | Context window size override. If unset, uses per-model config (see below) |
-| `N_UBATCH` | _(per-model)_ | Micro-batch size override. If unset, uses per-model config |
+| `N_UBATCH` | `1024` | Micro-batch size |
 
 #### Generation Defaults
 
@@ -93,27 +109,13 @@ Copy `env.example` to `.env` and adjust values as needed. All variables have sen
 | `MAX_CONTENT_LENGTH` | `500000` | Maximum total characters across all messages |
 | `MAX_STOP_SEQUENCES` | `16` | Maximum number of stop sequences per request |
 
-#### Debug
+#### Health Check
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `DEBUG` | `0` | Enable debug mode. `1` = on, `0` = off |
-
-### Per-Model Configuration
-
-Models listed in `config/__init__.py` have tuned defaults for context window and micro-batch size. These are used unless overridden by environment variables:
-
-| Model | `n_ctx` | `n_ubatch` |
-| --- | --- | --- |
-| `Qwen3.5-4B-Q4_1.gguf` | 20,000 | 1,024 |
-| `Phi-4-mini-reasoning-Q4_K_M.gguf` | 10,000 | 1,024 |
-
-**Fallback defaults** (when a model is not listed above):
-
-| Mode | Default `n_ctx` |
-| --- | --- |
-| `instruct` | 90,000 |
-| `reasoning` | 70,000 |
+| `LLAMA_SERVER_URL` | `http://127.0.0.1:8080` | URL of the llama-server (usually no need to change) |
+| `LLAMA_HEALTH_TIMEOUT` | `300` | Seconds to wait for llama-server to become healthy on cold start |
+| `LLAMA_HEALTH_INTERVAL` | `2` | Seconds between health check retries |
 
 ---
 
@@ -126,10 +128,7 @@ The `build_and_push.sh` script builds and pushes the image to Docker Hub.
 ```bash
 docker login
 
-# Basic build (instruct mode, default tag)
-./build_and_push.sh
-
-# Build with a specific model baked in
+# Build for instruct mode (default)
 ./build_and_push.sh \
   --mode instruct \
   --tag octagent-serverless \
@@ -154,10 +153,40 @@ docker login
 3. Set **Container Image** to `<your-dockerhub-user>/<your-tag>` (e.g. `myuser/octagent-serverless`)
 4. Set **Environment Variables** — at minimum:
    - `RUNPOD_MODE` = `instruct` (or `reasoning`)
-   - `N_GPU_LAYERS` = `-1`
-   - `FLASH_ATTN` = `1`
 5. _(Optional)_ Add other variables from the tables above to tune performance
 6. Select your GPU type and configure scaling (min/max workers)
+
+---
+
+## Switching Between Instruct and Reasoning
+
+The `RUNPOD_MODE` environment variable controls the entire behavior:
+
+| `RUNPOD_MODE` | Model loaded | llama-server flags | Think-tag handling |
+| --- | --- | --- | --- |
+| `instruct` | `INSTRUCT_MODEL` (default: `Qwen3.5-4B-Q4_1.gguf`) | Standard flags, no `--reasoning-format` | Strips `<think>` tags by default |
+| `reasoning` | `REASONING_MODEL` (default: `Phi-4-mini-reasoning-UD-Q8_K_XL.gguf`) | Adds `--reasoning-format deepseek` | Strips `<think>` tags by default; set `think: true` in request to preserve them |
+
+To switch modes, change the environment variable at deploy time — no code changes or image rebuilds needed (as long as both model files are present in the image):
+
+```bash
+# Deploy as instruct
+RUNPOD_MODE=instruct
+
+# Deploy as reasoning
+RUNPOD_MODE=reasoning
+```
+
+To preserve thinking content in reasoning mode responses, include `"think": true` in your request:
+
+```json
+{
+  "input": {
+    "messages": [{"role": "user", "content": "Solve step by step: 23 * 47"}],
+    "think": true
+  }
+}
+```
 
 ---
 
@@ -344,11 +373,31 @@ print(output)
 
 ---
 
+## Testing
+
+Run the full test suite:
+
+```bash
+pip install pytest
+python -m pytest tests/ -v -p no:anyio
+```
+
+The test suite covers:
+
+| Test file | Tests | What it covers |
+| --- | --- | --- |
+| `tests/test_handler.py` | 106 | Handler logic: input validation, chat completions, text prompts, error handling, think-tag stripping, generation params, server communication, health checks |
+| `tests/test_entrypoint.py` | 12 | Entrypoint script: mode switching, model selection, server flag construction, custom configs, error cases |
+
+All tests run without GPU or llama-server — external dependencies are mocked.
+
+---
+
 ## Logging
 
 All handler logs include the RunPod job ID for traceability (`[job=<id>]`). Key events logged:
 
-- **Cold start**: model path, mode, context size, GPU config, load time, file size
+- **Cold start**: health check status, server readiness
 - **Per-request**: input keys, inference parameters, mode, message count
 - **Post-inference**: elapsed time, prompt/completion/total token usage
 - **Errors**: client validation errors at `WARNING`, server errors at `ERROR` with full traceback
@@ -359,13 +408,13 @@ All handler logs include the RunPod job ID for traceability (`[job=<id>]`). Key 
 
 ```
 ├── src/
-│   ├── handler.py            # RunPod serverless handler
+│   ├── handler.py            # RunPod serverless handler (proxies to llama-server)
 │   └── __init__.py
-├── config/
-│   └── __init__.py           # Model config, GPU defaults, generation defaults
 ├── tests/
-│   └── test_handler.py       # pytest test suite
-├── Dockerfile                # Serverless Docker image (CUDA 12.4)
+│   ├── test_handler.py       # Handler test suite (106 tests)
+│   └── test_entrypoint.py    # Entrypoint test suite (12 tests)
+├── Dockerfile                # Based on ghcr.io/ggml-org/llama.cpp:server-cuda
+├── entrypoint.sh             # Starts llama-server + handler (mode-aware)
 ├── build_and_push.sh         # Build & push to Docker Hub
 ├── download-models.sh        # Download GGUF models locally
 ├── requirements.txt          # Python dependencies (runpod, huggingface_hub)

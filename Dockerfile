@@ -1,39 +1,27 @@
 # Dockerfile for RunPod Serverless deployment
-# Provides LLM inference via llama-cpp-python with CUDA support
+# Uses the official llama.cpp CUDA server image with a RunPod handler overlay.
 
-FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
+FROM ghcr.io/ggml-org/llama.cpp:server-cuda
+
+USER root
 
 # Build args
 ARG MODEL_URL=""
 
-# Install build dependencies (git needed for pip git+ installs)
+# Install Python and pip (the llama.cpp image is minimal, no Python included)
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 \
+    python3-pip \
     git \
+    wget \
+    && ln -sf /usr/bin/python3 /usr/bin/python \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --upgrade pip setuptools wheel
-
-# Install llama-cpp-python with CUDA 12.4 support from official pre-built wheels.
-# Source: https://abetlen.github.io/llama-cpp-python/whl/cu124/
-# These wheels ship with GPU support baked in — no source compilation needed.
-RUN pip install --no-cache-dir \
-    'llama-cpp-python[server]==0.3.16' \
-    --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124
-
-# Verify the CUDA-enabled shared library was installed (libggml-cuda.so).
-# We cannot call llama_supports_gpu_offload() at build time because it loads
-# libllama.so which links against libcuda.so.1 — a host driver lib that only
-# exists at runtime on GPU machines, not during docker build.
-RUN python -c "\
-import pathlib, sys; \
-site = pathlib.Path(sys.prefix) / 'lib'; \
-cuda_libs = list(pathlib.Path('/usr/local/lib/python3.11/dist-packages/llama_cpp/lib').glob('*cuda*')); \
-assert cuda_libs, 'No CUDA shared libs found in llama_cpp — wrong wheel installed'; \
-print(f'OK: found CUDA libs: {[p.name for p in cuda_libs]}')"
+RUN pip install --no-cache-dir --break-system-packages --upgrade pip setuptools wheel
 
 # Install RunPod and HuggingFace Hub (pinned in requirements.txt)
 COPY requirements.txt /tmp/requirements.txt
-RUN pip install --no-cache-dir -r /tmp/requirements.txt
+RUN pip install --no-cache-dir --break-system-packages -r /tmp/requirements.txt
 
 # Create models directory
 RUN mkdir -p /models
@@ -52,27 +40,29 @@ RUN chmod +x /tmp/download-models.sh && \
         MODELS_DIR=/models /tmp/download-models.sh; \
     fi
 
-# Create non-root user for runtime
-RUN useradd -m appuser && chown -R appuser:appuser /models
-
-# Copy handler source
+# Copy handler source and entrypoint
 COPY src/ /workspace/src/
-
-# Ensure the CUDA runtime/compat libs are on the linker path so libllama.so
-# can find libcuda.so.1 at container startup on GPU hosts.
-ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/local/cuda/compat:${LD_LIBRARY_PATH}
+COPY entrypoint.sh /workspace/entrypoint.sh
+RUN chmod +x /workspace/entrypoint.sh
 
 # Environment variables (see .env.example for full list)
+# RUNPOD_MODE controls which model is loaded: "instruct" or "reasoning"
 ENV RUNPOD_MODE=instruct \
     MODELS_DIR=/models \
+    INSTRUCT_MODEL=Qwen3.5-4B-Q4_1.gguf \
+    REASONING_MODEL=Phi-4-mini-reasoning-UD-Q8_K_XL.gguf \
+    REASONING_FORMAT=deepseek \
     N_GPU_LAYERS=-1 \
-    FLASH_ATTN=1 \
+    N_CTX=20000 \
+    N_BATCH=512 \
+    N_UBATCH=1024 \
+    FLASH_ATTN_MODE=on \
     MAX_GENERATION_TOKENS=75000 \
     DEFAULT_MAX_TOKENS=4096 \
     MAX_MESSAGES=256
 
 WORKDIR /workspace
 
-USER appuser
+EXPOSE 8080
 
-CMD ["python", "-u", "src/handler.py"]
+CMD ["/workspace/entrypoint.sh"]

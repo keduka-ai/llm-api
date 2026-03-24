@@ -1,17 +1,20 @@
 """
-RunPod serverless handler for LLM inference using llama-cpp-python.
+RunPod serverless handler for LLM inference via a local llama-server process.
 
-Loads a GGUF model on cold start based on RUNPOD_MODE (instruct or reasoning),
-then handles incoming jobs with chat-completions or text-prompt style inputs.
+The llama-server (from ggml-org/llama.cpp) is started by the entrypoint script
+and exposes an OpenAI-compatible API on localhost:8080. This handler proxies
+RunPod job requests to that server.
 """
 
 import os
 import re
 import time
 import logging
+from urllib.request import Request, urlopen
+from urllib.error import URLError
+import json
 
 import runpod
-from llama_cpp import Llama, llama_supports_gpu_offload
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -28,42 +31,11 @@ def _log_with_job(level: str, job_id: str, msg: str, *args, **kwargs):
     getattr(logger, level)(f"[job={job_id}] {msg}", *args, **kwargs)
 
 # ---------------------------------------------------------------------------
-# Per-model defaults (mirrors config.MODEL_CONFIG)
-# ---------------------------------------------------------------------------
-MODEL_CONFIG = {
-    "Qwen3.5-4B-Q4_1.gguf": {"n_ctx": 20_000, "chat_format": None, "n_ubatch": 1024},
-    "Phi-4-mini-reasoning-UD-Q8_K_XL.gguf": {"n_ctx": 10_000, "chat_format": None, "n_ubatch": 1024},
-    "Phi-4-mini-reasoning-Q4_K_M.gguf": {"n_ctx": 10_000, "chat_format": None, "n_ubatch": 1024},
-}
-
-DEFAULT_N_CTX = {
-    "instruct": 90_000,
-    "reasoning": 70_000,
-}
-
-# ---------------------------------------------------------------------------
 # Environment-driven configuration
 # ---------------------------------------------------------------------------
 RUNPOD_MODE = os.environ.get("RUNPOD_MODE", "instruct")  # "instruct" or "reasoning"
-MODELS_DIR = os.environ.get("MODELS_DIR", "/models")
 
-INSTRUCT_MODEL = os.environ.get("INSTRUCT_MODEL", "Qwen3.5-4B-Q4_1.gguf")
-REASONING_MODEL = os.environ.get("REASONING_MODEL", "Phi-4-mini-reasoning-UD-Q8_K_XL.gguf")
-
-MODEL_FILENAMES = {
-    "instruct": INSTRUCT_MODEL,
-    "reasoning": REASONING_MODEL,
-}
-
-N_GPU_LAYERS = int(os.environ.get("N_GPU_LAYERS", -1))
-N_BATCH = int(os.environ.get("N_BATCH", 512))
-FLASH_ATTN = bool(int(os.environ.get("FLASH_ATTN", 1)))
-USE_MMAP = bool(int(os.environ.get("USE_MMAP", 1)))
-USE_MLOCK = bool(int(os.environ.get("USE_MLOCK", 1)))
-MAIN_GPU = int(os.environ.get("MAIN_GPU", 0))
-
-_tensor_split_raw = os.environ.get("TENSOR_SPLIT", "")
-TENSOR_SPLIT = [float(x) for x in _tensor_split_raw.split(",") if x.strip()] or None
+LLAMA_SERVER_URL = os.environ.get("LLAMA_SERVER_URL", "http://127.0.0.1:8080")
 
 DEFAULT_SYSTEM_PROMPT = os.environ.get(
     "DEFAULT_SYSTEM_PROMPT",
@@ -77,89 +49,50 @@ MAX_MESSAGES = int(os.environ.get("MAX_MESSAGES", 256))
 MAX_CONTENT_LENGTH = int(os.environ.get("MAX_CONTENT_LENGTH", 500_000))
 MAX_STOP_SEQUENCES = int(os.environ.get("MAX_STOP_SEQUENCES", 16))
 
+# --- Health-check settings ---
+_HEALTH_TIMEOUT = int(os.environ.get("LLAMA_HEALTH_TIMEOUT", 300))
+_HEALTH_INTERVAL = int(os.environ.get("LLAMA_HEALTH_INTERVAL", 2))
+
 # ---------------------------------------------------------------------------
-# Cold-start: load model
+# Cold-start: wait for llama-server to be healthy
 # ---------------------------------------------------------------------------
 
-def _load_model() -> Llama:
-    """Load the GGUF model based on RUNPOD_MODE."""
-    model_filename = MODEL_FILENAMES.get(RUNPOD_MODE)
-    if model_filename is None:
-        raise ValueError(
-            f"Unknown RUNPOD_MODE '{RUNPOD_MODE}'. Expected 'instruct' or 'reasoning'."
-        )
+def _wait_for_server() -> None:
+    """Block until llama-server /health returns 200 or timeout expires."""
+    health_url = f"{LLAMA_SERVER_URL}/health"
+    deadline = time.time() + _HEALTH_TIMEOUT
+    logger.info("Waiting for llama-server at %s (timeout=%ds)...", health_url, _HEALTH_TIMEOUT)
 
-    model_path = os.path.join(MODELS_DIR, model_filename)
-    if not os.path.isfile(model_path):
-        raise FileNotFoundError(
-            f"Model file not found: {model_path}. "
-            f"Ensure the GGUF file is mounted at MODELS_DIR={MODELS_DIR}."
-        )
+    while time.time() < deadline:
+        try:
+            req = Request(health_url, method="GET")
+            with urlopen(req, timeout=5) as resp:
+                if resp.status == 200:
+                    logger.info("llama-server is healthy.")
+                    return
+        except (URLError, OSError):
+            pass
+        time.sleep(_HEALTH_INTERVAL)
 
-    # Resolve per-model overrides from MODEL_CONFIG
-    cfg = MODEL_CONFIG.get(model_filename, {})
-    n_ctx = int(os.environ.get("N_CTX") or cfg.get("n_ctx") or DEFAULT_N_CTX.get(RUNPOD_MODE, 20_000))
-    n_ubatch = int(os.environ.get("N_UBATCH") or cfg.get("n_ubatch") or N_BATCH)
-    chat_format = cfg.get("chat_format")  # None lets llama-cpp auto-detect
-
-    logger.info(
-        "Loading model: %s (mode=%s, n_ctx=%d, n_gpu_layers=%d, flash_attn=%s)",
-        model_path, RUNPOD_MODE, n_ctx, N_GPU_LAYERS, FLASH_ATTN,
+    raise RuntimeError(
+        f"llama-server did not become healthy within {_HEALTH_TIMEOUT}s at {health_url}"
     )
 
-    kwargs = dict(
-        model_path=model_path,
-        n_gpu_layers=N_GPU_LAYERS,
-        n_ctx=n_ctx,
-        n_batch=N_BATCH,
-        n_ubatch=n_ubatch,
-        flash_attn=FLASH_ATTN,
-        use_mmap=USE_MMAP,
-        use_mlock=USE_MLOCK,
-        main_gpu=MAIN_GPU,
-        verbose=False,
-    )
 
-    if TENSOR_SPLIT is not None:
-        kwargs["tensor_split"] = TENSOR_SPLIT
-
-    if chat_format is not None:
-        kwargs["chat_format"] = chat_format
-
-    # Enable verbose temporarily to capture backend info in logs
-    kwargs["verbose"] = True
-
-    start = time.time()
-    llm = Llama(**kwargs)
-    elapsed = time.time() - start
-    logger.info("Model loaded in %.2f seconds.", elapsed)
-
-    # Log model memory footprint if available
-    model_size_mb = os.path.getsize(model_path) / (1024 * 1024)
-    logger.info("Model file size: %.1f MB", model_size_mb)
-
-    # Verify GPU offloading — fail hard if GPU is not available
-    try:
-        supports_gpu = llama_supports_gpu_offload()
-        logger.info("GPU offload supported by llama.cpp build: %s", supports_gpu)
-        if not supports_gpu and N_GPU_LAYERS != 0:
-            raise RuntimeError(
-                f"n_gpu_layers={N_GPU_LAYERS} requested but llama-cpp-python has NO GPU support. "
-                "Rebuild the image with CUDA support."
-            )
-    except RuntimeError:
-        raise
-    except Exception as e:
-        logger.warning("Could not check GPU offload support: %s", e)
-
-    return llm
+def _server_chat_completion(payload: dict) -> dict:
+    """Send a chat completion request to the local llama-server."""
+    url = f"{LLAMA_SERVER_URL}/v1/chat/completions"
+    data = json.dumps(payload).encode()
+    req = Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
+    with urlopen(req, timeout=600) as resp:
+        return json.loads(resp.read())
 
 
-# Global model instance (loaded once on cold start)
+# Wait for llama-server on cold start
 try:
-    llm = _load_model()
+    _wait_for_server()
 except Exception as e:
-    logger.critical("Failed to load model on cold start: %s", e, exc_info=True)
+    logger.critical("llama-server not available: %s", e, exc_info=True)
     raise SystemExit(1)
 
 
@@ -323,7 +256,7 @@ def handler(job: dict) -> dict:
 
         model_label = job_input.get("model") or job_input.get("model_name") or RUNPOD_MODE
 
-        create_kwargs = dict(
+        payload = dict(
             messages=messages,
             max_tokens=max_tokens,
             temperature=temperature,
@@ -341,22 +274,22 @@ def handler(job: dict) -> dict:
         }
         for key, cast_fn in _optional_keys.items():
             if key in job_input:
-                create_kwargs[key] = cast_fn(job_input[key])
+                payload[key] = cast_fn(job_input[key])
 
         if "stop" in job_input:
             stop_val = job_input["stop"]
             # Accept string or list of strings
             if isinstance(stop_val, str):
-                create_kwargs["stop"] = [stop_val]
+                payload["stop"] = [stop_val]
             else:
                 stop_list = list(stop_val)
                 if len(stop_list) > MAX_STOP_SEQUENCES:
                     _log_with_job("warning", job_id, "Too many stop sequences: %d", len(stop_list))
                     return {"error": {"message": f"'stop' must not exceed {MAX_STOP_SEQUENCES} entries", "type": "invalid_request_error"}}
-                create_kwargs["stop"] = stop_list
+                payload["stop"] = stop_list
 
         # -----------------------------------------------------------
-        # Inference
+        # Inference via llama-server HTTP API
         # -----------------------------------------------------------
         _log_with_job(
             "info", job_id,
@@ -364,7 +297,7 @@ def handler(job: dict) -> dict:
             RUNPOD_MODE, model_label, max_tokens, temperature, len(messages),
         )
         start = time.time()
-        result = llm.create_chat_completion(**create_kwargs)
+        result = _server_chat_completion(payload)
         elapsed = time.time() - start
 
         # Log token usage
@@ -402,7 +335,7 @@ def handler(job: dict) -> dict:
                 return {"error": {"message": "Model returned no content", "type": "server_error"}}
             return {"response": response_text}
 
-        # OpenAI-compatible response (pass through the llama-cpp result)
+        # OpenAI-compatible response (pass through the llama-server result)
         # Ensure the model field reflects the requested label
         result["model"] = model_label
         return result
