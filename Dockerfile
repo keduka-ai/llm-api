@@ -20,11 +20,16 @@ RUN pip install --no-cache-dir \
     'llama-cpp-python[server]==0.3.16' \
     --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124
 
-# Fail build if CUDA support is missing from llama-cpp-python
+# Verify the CUDA-enabled shared library was installed (libggml-cuda.so).
+# We cannot call llama_supports_gpu_offload() at build time because it loads
+# libllama.so which links against libcuda.so.1 — a host driver lib that only
+# exists at runtime on GPU machines, not during docker build.
 RUN python -c "\
-from llama_cpp import llama_supports_gpu_offload; \
-assert llama_supports_gpu_offload(), 'llama-cpp-python built WITHOUT CUDA'; \
-print('OK: llama-cpp-python CUDA support verified')"
+import pathlib, sys; \
+site = pathlib.Path(sys.prefix) / 'lib'; \
+cuda_libs = list(pathlib.Path('/usr/local/lib/python3.11/dist-packages/llama_cpp/lib').glob('*cuda*')); \
+assert cuda_libs, 'No CUDA shared libs found in llama_cpp — wrong wheel installed'; \
+print(f'OK: found CUDA libs: {[p.name for p in cuda_libs]}')"
 
 # Install RunPod and HuggingFace Hub (pinned in requirements.txt)
 COPY requirements.txt /tmp/requirements.txt
@@ -52,6 +57,10 @@ RUN useradd -m appuser && chown -R appuser:appuser /models
 
 # Copy handler source
 COPY src/ /workspace/src/
+
+# Ensure the CUDA runtime/compat libs are on the linker path so libllama.so
+# can find libcuda.so.1 at container startup on GPU hosts.
+ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/local/cuda/compat:${LD_LIBRARY_PATH}
 
 # Environment variables (see .env.example for full list)
 ENV RUNPOD_MODE=instruct \
