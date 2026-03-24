@@ -69,4 +69,5 @@ WORKDIR /workspace
 
 EXPOSE 8080
 
+ENTRYPOINT []
 CMD ["/workspace/entrypoint.sh"]
