@@ -11,7 +11,7 @@ import time
 import logging
 
 import runpod
-from llama_cpp import Llama
+from llama_cpp import Llama, llama_supports_gpu_offload
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -139,18 +139,12 @@ def _load_model() -> Llama:
     logger.info("Model file size: %.1f MB", model_size_mb)
 
     # Verify GPU offloading — fail hard if GPU is not available
-    if hasattr(Llama, "supports_gpu_offload"):
-        supports_gpu = Llama.supports_gpu_offload()
-        logger.info("GPU offload supported by llama.cpp build: %s", supports_gpu)
-        if not supports_gpu and N_GPU_LAYERS != 0:
-            raise RuntimeError(
-                f"n_gpu_layers={N_GPU_LAYERS} requested but llama-cpp-python has NO GPU support. "
-                "Rebuild the image with CUDA support."
-            )
-    else:
+    supports_gpu = llama_supports_gpu_offload()
+    logger.info("GPU offload supported by llama.cpp build: %s", supports_gpu)
+    if not supports_gpu and N_GPU_LAYERS != 0:
         raise RuntimeError(
-            "Cannot verify GPU offload support (older llama-cpp-python version). "
-            "Upgrade llama-cpp-python."
+            f"n_gpu_layers={N_GPU_LAYERS} requested but llama-cpp-python has NO GPU support. "
+            "Rebuild the image with CUDA support."
         )
     except Exception as e:
         logger.warning("Could not check GPU offload support: %s", e)

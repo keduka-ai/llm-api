@@ -26,8 +26,8 @@ RUN pip install --no-cache-dir \
 # Fail the build if CUDA support is missing
 # Fail build if CUDA support is missing from llama-cpp-python
 RUN python -c "\
-from llama_cpp import Llama; \
-assert Llama.supports_gpu_offload(), 'llama-cpp-python built WITHOUT CUDA'; \
+from llama_cpp import llama_supports_gpu_offload; \
+assert llama_supports_gpu_offload(), 'llama-cpp-python built WITHOUT CUDA'; \
 print('OK: llama-cpp-python CUDA support verified')"
 
 # Verify CUDA toolkit is accessible
