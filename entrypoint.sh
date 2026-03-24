@@ -37,10 +37,14 @@ SERVER_ARGS=(
     --ctx-size "${N_CTX:-20000}"
     --batch-size "${N_BATCH:-512}"
     --ubatch-size "${N_UBATCH:-1024}"
-    --flash-attn "${FLASH_ATTN_MODE:-on}"
     --jinja
     --metrics
 )
+
+# --flash-attn is a boolean flag (no argument); enable unless explicitly disabled
+if [ "${FLASH_ATTN_MODE:-on}" != "off" ]; then
+    SERVER_ARGS+=(--flash-attn)
+fi
 
 # Enable reasoning-format only for reasoning mode
 if [ "$RUNPOD_MODE" = "reasoning" ]; then
@@ -50,6 +54,30 @@ fi
 llama-server "${SERVER_ARGS[@]}" &
 LLAMA_PID=$!
 
-# Start the RunPod handler (it will wait for /health internally)
-echo "Starting RunPod handler..."
-exec python -u src/handler.py
+python -u src/handler.py &
+HANDLER_PID=$!
+
+echo "Started llama-server (PID=$LLAMA_PID) and handler (PID=$HANDLER_PID)"
+
+# Clean up both processes on signals (TERM/INT from Docker stop or RunPod)
+cleanup() {
+    echo "Shutting down..."
+    kill $HANDLER_PID $LLAMA_PID 2>/dev/null
+    wait $HANDLER_PID $LLAMA_PID 2>/dev/null
+}
+trap cleanup EXIT TERM INT
+
+# Monitor: if either process exits, shut everything down so RunPod recycles the worker
+while true; do
+    if ! kill -0 $LLAMA_PID 2>/dev/null; then
+        echo "ERROR: llama-server (PID=$LLAMA_PID) exited unexpectedly" >&2
+        kill $HANDLER_PID 2>/dev/null
+        exit 1
+    fi
+    if ! kill -0 $HANDLER_PID 2>/dev/null; then
+        echo "ERROR: handler (PID=$HANDLER_PID) exited unexpectedly" >&2
+        kill $LLAMA_PID 2>/dev/null
+        exit 1
+    fi
+    sleep 5
+done

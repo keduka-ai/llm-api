@@ -480,14 +480,17 @@ class TestHandlerTextPrompt:
         mock_server.return_value = _make_response("ok")
         handler({"input": {"prompt": "Hello", "system_prompt": "You are a pirate."}})
         msgs = mock_server.call_args[0][0]["messages"]
-        assert "You are a pirate." in msgs[0]["content"]
-        assert "Hello" in msgs[0]["content"]
+        assert msgs[0]["role"] == "system"
+        assert msgs[0]["content"] == "You are a pirate."
+        assert msgs[1]["role"] == "user"
+        assert msgs[1]["content"] == "Hello"
 
     @patch("src.handler._server_chat_completion")
     def test_default_system_prompt(self, mock_server):
         mock_server.return_value = _make_response("ok")
         handler({"input": {"prompt": "Hello"}})
         msgs = mock_server.call_args[0][0]["messages"]
+        assert msgs[0]["role"] == "system"
         assert "highly knowledgeable" in msgs[0]["content"]
 
     @patch("src.handler._server_chat_completion")
@@ -532,13 +535,15 @@ class TestHandlerTextPrompt:
             h.MAX_CONTENT_LENGTH = original
 
     @patch("src.handler._server_chat_completion")
-    def test_text_prompt_builds_single_user_message(self, mock_server):
-        """Text prompt should produce exactly one user message."""
+    def test_text_prompt_builds_system_and_user_messages(self, mock_server):
+        """Text prompt should produce a system message and a user message."""
         mock_server.return_value = _make_response("ok")
         handler({"input": {"prompt": "Hello"}})
         msgs = mock_server.call_args[0][0]["messages"]
-        assert len(msgs) == 1
-        assert msgs[0]["role"] == "user"
+        assert len(msgs) == 2
+        assert msgs[0]["role"] == "system"
+        assert msgs[1]["role"] == "user"
+        assert msgs[1]["content"] == "Hello"
 
 
 # ===================================================================

@@ -88,6 +88,28 @@ def _server_chat_completion(payload: dict) -> dict:
         return json.loads(resp.read())
 
 
+def _stream_chat_completion(payload: dict):
+    """Stream chat completion chunks from llama-server via SSE."""
+    url = f"{LLAMA_SERVER_URL}/v1/chat/completions"
+    payload = {**payload, "stream": True}
+    data = json.dumps(payload).encode()
+    req = Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
+    with urlopen(req, timeout=600) as resp:
+        buf = ""
+        for raw_line in resp:
+            buf += raw_line.decode("utf-8")
+            while "\n" in buf:
+                line, buf = buf.split("\n", 1)
+                line = line.strip()
+                if not line or line.startswith(":"):
+                    continue
+                if line.startswith("data: "):
+                    data_str = line[6:].strip()
+                    if data_str == "[DONE]":
+                        return
+                    yield json.loads(data_str)
+
+
 # Wait for llama-server on cold start
 try:
     _wait_for_server()
@@ -181,7 +203,29 @@ def _validate_generation_params(job_input: dict) -> str | None:
     return None
 
 
-def handler(job: dict) -> dict:
+def _streaming_generator(job_id: str, payload: dict, model_label: str, is_text_prompt: bool):
+    """Yield SSE chunks from llama-server for RunPod streaming responses."""
+    try:
+        for chunk in _stream_chat_completion(payload):
+            # Override model label in each chunk
+            chunk["model"] = model_label
+            if is_text_prompt:
+                # Extract delta content for simplified text-prompt format
+                try:
+                    delta = chunk["choices"][0]["delta"]
+                    content = delta.get("content", "")
+                    if content:
+                        yield {"response": content}
+                except (KeyError, IndexError):
+                    pass
+            else:
+                yield chunk
+    except Exception as e:
+        logger.error("[job=%s] Streaming error: %s", job_id, e, exc_info=True)
+        yield {"error": {"message": "Streaming error occurred", "type": "server_error"}}
+
+
+def handler(job: dict):
     """
     RunPod serverless handler.
 
@@ -242,8 +286,10 @@ def handler(job: dict) -> dict:
                 _log_with_job("warning", job_id, "Prompt too long or invalid type")
                 return {"error": {"message": f"'prompt' must be a string not exceeding {MAX_CONTENT_LENGTH} characters", "type": "invalid_request_error"}}
             system_prompt_content = job_input.get("system_prompt", DEFAULT_SYSTEM_PROMPT)
-            full_prompt = f"{system_prompt_content}\n\n{prompt}"
-            messages = [{"role": "user", "content": full_prompt}]
+            messages = [
+                {"role": "system", "content": system_prompt_content},
+                {"role": "user", "content": prompt},
+            ]
 
         # -----------------------------------------------------------
         # Generation parameters
@@ -289,7 +335,20 @@ def handler(job: dict) -> dict:
                 payload["stop"] = stop_list
 
         # -----------------------------------------------------------
-        # Inference via llama-server HTTP API
+        # Streaming mode — return a generator for RunPod to stream
+        # -----------------------------------------------------------
+        stream_mode = bool(job_input.get("stream", False))
+
+        if stream_mode:
+            _log_with_job(
+                "info", job_id,
+                "Streaming inference (mode=%s, model=%s, max_tokens=%d, temp=%.4f, n_messages=%d)",
+                RUNPOD_MODE, model_label, max_tokens, temperature, len(messages),
+            )
+            return _streaming_generator(job_id, payload, model_label, is_text_prompt)
+
+        # -----------------------------------------------------------
+        # Non-streaming inference via llama-server HTTP API
         # -----------------------------------------------------------
         _log_with_job(
             "info", job_id,
@@ -361,4 +420,4 @@ def handler(job: dict) -> dict:
 # ---------------------------------------------------------------------------
 # Entrypoint
 # ---------------------------------------------------------------------------
-runpod.serverless.start({"handler": handler})
+runpod.serverless.start({"handler": handler, "return_aggregate_stream": True})
