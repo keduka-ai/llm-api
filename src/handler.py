@@ -110,12 +110,14 @@ def _stream_chat_completion(payload: dict):
                     yield json.loads(data_str)
 
 
-# Wait for llama-server on cold start
-try:
-    _wait_for_server()
-except Exception as e:
-    logger.critical("llama-server not available: %s", e, exc_info=True)
-    raise SystemExit(1)
+# Wait for llama-server on cold start (skip during import-only / repo scanning)
+_SKIP_HEALTH_CHECK = os.environ.get("SKIP_HEALTH_CHECK", "0") == "1"
+if not _SKIP_HEALTH_CHECK:
+    try:
+        _wait_for_server()
+    except Exception as e:
+        logger.critical("llama-server not available: %s", e, exc_info=True)
+        raise SystemExit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -418,6 +420,7 @@ def handler(job: dict):
 
 
 # ---------------------------------------------------------------------------
-# Entrypoint
+# Entrypoint — allow running directly or via root handler.py
 # ---------------------------------------------------------------------------
-runpod.serverless.start({"handler": handler, "return_aggregate_stream": True})
+if __name__ == "__main__":
+    runpod.serverless.start({"handler": handler, "return_aggregate_stream": True})
