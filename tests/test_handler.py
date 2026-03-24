@@ -17,7 +17,8 @@ from unittest.mock import MagicMock
 
 _mock_llama_module = types.ModuleType("llama_cpp")
 _mock_llama_cls = MagicMock(name="Llama")
-_mock_llama_module.Llama = _mock_llama_cls
+_mock_llama_module.Llama = _mock_llama_cls  # type: ignore[attr-defined]
+_mock_llama_module.llama_supports_gpu_offload = MagicMock(return_value=True)  # type: ignore[attr-defined]
 
 _mock_runpod_module = types.ModuleType("runpod")
 _mock_runpod_serverless = MagicMock(name="runpod.serverless")
@@ -329,6 +330,35 @@ class TestLoadModel:
         assert kw["n_gpu_layers"] == 0
         assert kw["flash_attn"] is False
         assert kw["verbose"] is True
+
+    def test_gpu_check_raises_when_no_gpu_support(self):
+        """When GPU layers requested but build lacks GPU support, raise RuntimeError."""
+        from unittest.mock import patch
+        import src.handler as h
+        original = h.N_GPU_LAYERS
+        try:
+            h.N_GPU_LAYERS = -1
+            _mock_llama_cls.reset_mock()
+            with patch("src.handler.llama_supports_gpu_offload", return_value=False):
+                with pytest.raises(RuntimeError, match="NO GPU support"):
+                    _load_model()
+        finally:
+            h.N_GPU_LAYERS = original
+
+    def test_gpu_check_passes_when_layers_zero(self):
+        """When n_gpu_layers=0, no GPU check failure even without GPU support."""
+        from unittest.mock import patch
+        _mock_llama_cls.reset_mock()
+        with patch("src.handler.llama_supports_gpu_offload", return_value=False):
+            _load_model()  # N_GPU_LAYERS=0 from env setup, should not raise
+
+    def test_gpu_check_exception_logged_as_warning(self):
+        """When llama_supports_gpu_offload raises an unexpected error, log warning and continue."""
+        from unittest.mock import patch
+        _mock_llama_cls.reset_mock()
+        with patch("src.handler.llama_supports_gpu_offload", side_effect=OSError("libcuda not found")):
+            llm = _load_model()  # Should not raise
+            assert llm is not None
 
 
 # ===================================================================

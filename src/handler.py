@@ -139,13 +139,16 @@ def _load_model() -> Llama:
     logger.info("Model file size: %.1f MB", model_size_mb)
 
     # Verify GPU offloading — fail hard if GPU is not available
-    supports_gpu = llama_supports_gpu_offload()
-    logger.info("GPU offload supported by llama.cpp build: %s", supports_gpu)
-    if not supports_gpu and N_GPU_LAYERS != 0:
-        raise RuntimeError(
-            f"n_gpu_layers={N_GPU_LAYERS} requested but llama-cpp-python has NO GPU support. "
-            "Rebuild the image with CUDA support."
-        )
+    try:
+        supports_gpu = llama_supports_gpu_offload()
+        logger.info("GPU offload supported by llama.cpp build: %s", supports_gpu)
+        if not supports_gpu and N_GPU_LAYERS != 0:
+            raise RuntimeError(
+                f"n_gpu_layers={N_GPU_LAYERS} requested but llama-cpp-python has NO GPU support. "
+                "Rebuild the image with CUDA support."
+            )
+    except RuntimeError:
+        raise
     except Exception as e:
         logger.warning("Could not check GPU offload support: %s", e)
 

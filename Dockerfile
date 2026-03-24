@@ -17,6 +17,9 @@ RUN pip install --upgrade pip setuptools wheel
 
 # Install llama-cpp-python with CUDA support via source build.
 # Pre-built wheels from cu124 index are CPU-only, so force source compilation.
+# Set CUDA_HOME and CUDACXX so CMake can locate the CUDA toolkit and compiler.
+ENV CUDA_HOME=/usr/local/cuda
+ENV CUDACXX=/usr/local/cuda/bin/nvcc
 RUN CMAKE_ARGS="-DGGML_CUDA=on" FORCE_CMAKE=1 \
     pip install --no-cache-dir --no-binary llama-cpp-python \
     'llama-cpp-python[server]==0.3.17'
