@@ -45,8 +45,10 @@ RUN chmod +x /tmp/download-models.sh && \
         MODELS_DIR=/models /tmp/download-models.sh; \
     fi
 
-# Copy handler source and entrypoint
+# Copy handler source, config, and entrypoint
 COPY src/ /workspace/src/
+COPY handler.py /workspace/handler.py
+COPY config/ /workspace/config/
 COPY entrypoint.sh /workspace/entrypoint.sh
 RUN chmod +x /workspace/entrypoint.sh
 
