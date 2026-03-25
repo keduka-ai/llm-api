@@ -7,7 +7,8 @@ USER root
 
 # Ensure llama.cpp shared libs (libmtmd.so etc.) are discoverable
 RUN ldconfig /app 2>/dev/null; true
-ENV LD_LIBRARY_PATH="/app:${LD_LIBRARY_PATH}"
+ENV LD_LIBRARY_PATH="/app:${LD_LIBRARY_PATH}" \
+    PATH="/app:${PATH}"
 
 # Build args
 ARG MODEL_URL=""
