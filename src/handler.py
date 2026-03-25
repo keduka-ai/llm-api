@@ -33,8 +33,6 @@ def _log_with_job(level: str, job_id: str, msg: str, *args, **kwargs):
 # ---------------------------------------------------------------------------
 # Environment-driven configuration
 # ---------------------------------------------------------------------------
-RUNPOD_MODE = os.environ.get("RUNPOD_MODE", "instruct")  # "instruct" or "reasoning"
-
 LLAMA_SERVER_URL = os.environ.get("LLAMA_SERVER_URL", "http://127.0.0.1:8080")
 
 DEFAULT_SYSTEM_PROMPT = os.environ.get(
@@ -302,7 +300,27 @@ def handler(job: dict):
         repeat_penalty = float(job_input.get("repeat_penalty", 1.2))
         think = bool(job_input.get("think", False))
 
-        model_label = job_input.get("model") or job_input.get("model_name") or RUNPOD_MODE
+        model_label = job_input.get("model") or job_input.get("model_name") or "qwen3.5"
+
+        # -----------------------------------------------------------
+        # Inject thinking directive into messages
+        # -----------------------------------------------------------
+        directive = "/think" if think else "/no_think"
+        # Find the last user message and append the directive
+        last_user_idx = None
+        for i in range(len(messages) - 1, -1, -1):
+            if messages[i]["role"] == "user":
+                last_user_idx = i
+                break
+
+        if last_user_idx is not None:
+            messages[last_user_idx] = {
+                **messages[last_user_idx],
+                "content": messages[last_user_idx]["content"] + f"\n{directive}",
+            }
+        elif think:
+            # No user message found but think=True; prepend a system message
+            messages.insert(0, {"role": "system", "content": directive})
 
         payload = dict(
             messages=messages,
@@ -344,8 +362,8 @@ def handler(job: dict):
         if stream_mode:
             _log_with_job(
                 "info", job_id,
-                "Streaming inference (mode=%s, model=%s, max_tokens=%d, temp=%.4f, n_messages=%d)",
-                RUNPOD_MODE, model_label, max_tokens, temperature, len(messages),
+                "Streaming inference (think=%s, model=%s, max_tokens=%d, temp=%.4f, n_messages=%d)",
+                think, model_label, max_tokens, temperature, len(messages),
             )
             return _streaming_generator(job_id, payload, model_label, is_text_prompt)
 
@@ -354,8 +372,8 @@ def handler(job: dict):
         # -----------------------------------------------------------
         _log_with_job(
             "info", job_id,
-            "Running inference (mode=%s, model=%s, max_tokens=%d, temp=%.4f, n_messages=%d)",
-            RUNPOD_MODE, model_label, max_tokens, temperature, len(messages),
+            "Running inference (think=%s, model=%s, max_tokens=%d, temp=%.4f, n_messages=%d)",
+            think, model_label, max_tokens, temperature, len(messages),
         )
         start = time.time()
         result = _server_chat_completion(payload)

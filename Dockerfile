@@ -53,12 +53,8 @@ COPY entrypoint.sh /workspace/entrypoint.sh
 RUN chmod +x /workspace/entrypoint.sh
 
 # Environment variables (see .env.example for full list)
-# RUNPOD_MODE controls which model is loaded: "instruct" or "reasoning"
-ENV RUNPOD_MODE=instruct \
-    MODELS_DIR=/models \
-    INSTRUCT_MODEL=Qwen3.5-4B-Q4_1.gguf \
-    REASONING_MODEL=Phi-4-mini-reasoning-UD-Q8_K_XL.gguf \
-    REASONING_FORMAT=deepseek \
+ENV MODELS_DIR=/models \
+    MODEL_FILE=Qwen3.5-4B-Q4_1.gguf \
     N_GPU_LAYERS=-1 \
     N_CTX=20000 \
     N_BATCH=512 \

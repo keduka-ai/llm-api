@@ -1,6 +1,6 @@
 # LLM API — RunPod Serverless
 
-RunPod serverless endpoint for LLM inference powered by the official [llama.cpp](https://github.com/ggml-org/llama.cpp) CUDA server. Supports instruct and reasoning models via an OpenAI-compatible interface, switchable at deploy time with a single environment variable.
+RunPod serverless endpoint for LLM inference powered by the official [llama.cpp](https://github.com/ggml-org/llama.cpp) CUDA server. Supports both standard instruct and reasoning/thinking modes via an OpenAI-compatible interface, selectable per-request with the `think` parameter.
 
 ## Table of Contents
 
@@ -11,12 +11,15 @@ RunPod serverless endpoint for LLM inference powered by the official [llama.cpp]
 - [Deploy on RunPod](#deploy-on-runpod)
   - [Build the Docker Image](#1-build-the-docker-image)
   - [Create a RunPod Endpoint](#2-create-a-runpod-endpoint)
-- [Switching Between Instruct and Reasoning](#switching-between-instruct-and-reasoning)
 - [API Usage](#api-usage)
   - [Input Styles](#input-styles)
   - [Generation Parameters](#generation-parameters)
+  - [Streaming](#streaming)
+  - [Response Formats](#response-formats)
+  - [Error Responses](#error-responses)
   - [curl Examples](#curl-examples)
   - [Python Examples](#python-examples)
+- [Think-Tag Handling](#think-tag-handling)
 - [Testing](#testing)
 - [Logging](#logging)
 - [Project Structure](#project-structure)
@@ -26,22 +29,22 @@ RunPod serverless endpoint for LLM inference powered by the official [llama.cpp]
 ## Architecture
 
 ```text
-┌─────────────────────────────────────────────────────┐
-│  Docker container  (ghcr.io/ggml-org/llama.cpp)     │
-│                                                     │
-│  ┌──────────────┐   HTTP :8080   ┌───────────────┐  │
-│  │ RunPod       │ ─────────────▶ │ llama-server  │  │
-│  │ handler.py   │   /v1/chat/    │ (native C++)  │  │
-│  │              │   completions  │               │  │
-│  └──────────────┘                └───────────────┘  │
-│        │                               │            │
-│   RunPod API                      GPU (CUDA)        │
-└─────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│  Docker container  (ghcr.io/ggml-org/llama.cpp:server-cuda) │
+│                                                          │
+│  ┌──────────────┐   HTTP :8080   ┌───────────────┐       │
+│  │ RunPod       │ ─────────────▶ │ llama-server  │       │
+│  │ handler.py   │   /v1/chat/    │ (native C++)  │       │
+│  │              │   completions  │               │       │
+│  └──────────────┘                └───────────────┘       │
+│        │                               │                 │
+│   RunPod API                      GPU (CUDA)             │
+└──────────────────────────────────────────────────────────┘
 ```
 
 - **Base image**: `ghcr.io/ggml-org/llama.cpp:server-cuda` — the official llama.cpp CUDA server with up-to-date model support (Qwen3.5, Phi-4, etc.)
 - **Handler** (`src/handler.py`): a RunPod serverless handler that validates requests, proxies them to the local llama-server via HTTP, and post-processes responses (think-tag stripping, format normalization)
-- **Entrypoint** (`entrypoint.sh`): starts llama-server with the correct model and flags based on `RUNPOD_MODE`, then launches the handler
+- **Entrypoint** (`entrypoint.sh`): starts llama-server with the configured model and `--reasoning-format qwen3`, then launches the handler. Monitors both processes and exits if either crashes.
 
 ---
 
@@ -51,18 +54,13 @@ RunPod serverless endpoint for LLM inference powered by the official [llama.cpp]
 git clone https://github.com/keduka-ai/llm-api.git
 cd llm-api
 
-# 1. Copy and edit environment variables
-cp env.example .env
-# Edit .env with your preferred settings (see Configuration section below)
-
-# 2. Build and push the Docker image
+# 1. Build and push the Docker image
 docker login
 ./build_and_push.sh \
-  --mode instruct \
   --tag octagent-serverless \
   --model-url https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_1.gguf
 
-# 3. Create an endpoint on RunPod and send requests
+# 2. Create an endpoint on RunPod and send requests
 ```
 
 ---
@@ -71,19 +69,16 @@ docker login
 
 ### Environment Variables
 
-Copy `env.example` to `.env` and adjust values as needed. All variables have sensible defaults and are optional.
+All variables have sensible defaults and are optional. Set them via the RunPod endpoint environment or Docker `--env` flags.
 
-#### Mode & Model Selection
+#### Model & Server
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `RUNPOD_MODE` | `instruct` | Operating mode: `instruct` or `reasoning`. Controls which model is loaded and which llama-server flags are used |
-| `INSTRUCT_MODEL` | `Qwen3.5-4B-Q4_1.gguf` | Filename of the instruct model (must be in `MODELS_DIR`) |
-| `REASONING_MODEL` | `Phi-4-mini-reasoning-UD-Q8_K_XL.gguf` | Filename of the reasoning model (must be in `MODELS_DIR`) |
+| `MODEL_FILE` | `Qwen3.5-4B-Q4_1.gguf` | Filename of the GGUF model to load (must be in `MODELS_DIR`) |
 | `MODELS_DIR` | `/models` | Directory containing GGUF model files |
-| `REASONING_FORMAT` | `deepseek` | Reasoning format passed to `--reasoning-format` in reasoning mode |
 
-#### GPU & Server Configuration
+#### GPU & Performance
 
 | Variable | Default | Description |
 | --- | --- | --- |
@@ -128,21 +123,19 @@ The `build_and_push.sh` script builds and pushes the image to Docker Hub.
 ```bash
 docker login
 
-# Build for instruct mode (default)
+# Build with a model baked into the image
 ./build_and_push.sh \
-  --mode instruct \
   --tag octagent-serverless \
   --model-url https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_1.gguf
 
-# Build for reasoning mode
-./build_and_push.sh --mode reasoning --tag octagent-reasoning
+# Or build without --model-url to use download-models.sh at build time
+./build_and_push.sh --tag octagent-serverless
 ```
 
 **Build script options:**
 
 | Flag | Default | Description |
 | --- | --- | --- |
-| `--mode` | `instruct` | `instruct` or `reasoning` |
 | `--tag` | `octagent-serverless` | Docker image tag |
 | `--model-url` | _(none)_ | HTTPS URL to a GGUF model file. If omitted, `download-models.sh` runs instead |
 
@@ -152,41 +145,9 @@ docker login
 2. Click **New Endpoint**
 3. Set **Container Image** to `<your-dockerhub-user>/<your-tag>` (e.g. `myuser/octagent-serverless`)
 4. Set **Environment Variables** — at minimum:
-   - `RUNPOD_MODE` = `instruct` (or `reasoning`)
+   - `MODEL_FILE` = your GGUF model filename (e.g. `Qwen3.5-4B-Q4_1.gguf`)
 5. _(Optional)_ Add other variables from the tables above to tune performance
 6. Select your GPU type and configure scaling (min/max workers)
-
----
-
-## Switching Between Instruct and Reasoning
-
-The `RUNPOD_MODE` environment variable controls the entire behavior:
-
-| `RUNPOD_MODE` | Model loaded | llama-server flags | Think-tag handling |
-| --- | --- | --- | --- |
-| `instruct` | `INSTRUCT_MODEL` (default: `Qwen3.5-4B-Q4_1.gguf`) | Standard flags, no `--reasoning-format` | Strips `<think>` tags by default |
-| `reasoning` | `REASONING_MODEL` (default: `Phi-4-mini-reasoning-UD-Q8_K_XL.gguf`) | Adds `--reasoning-format deepseek` | Strips `<think>` tags by default; set `think: true` in request to preserve them |
-
-To switch modes, change the environment variable at deploy time — no code changes or image rebuilds needed (as long as both model files are present in the image):
-
-```bash
-# Deploy as instruct
-RUNPOD_MODE=instruct
-
-# Deploy as reasoning
-RUNPOD_MODE=reasoning
-```
-
-To preserve thinking content in reasoning mode responses, include `"think": true` in your request:
-
-```json
-{
-  "input": {
-    "messages": [{"role": "user", "content": "Solve step by step: 23 * 47"}],
-    "think": true
-  }
-}
-```
 
 ---
 
@@ -211,7 +172,8 @@ All parameters are optional and go inside the `"input"` object:
 | `temperature` | float | `0.00005` | Sampling temperature (>= 0) |
 | `top_p` | float | `1.0` | Nucleus sampling threshold (0, 1] |
 | `repeat_penalty` | float | `1.2` | Repetition penalty (> 0) |
-| `think` | bool | `false` | When `false`, strips `<think>...</think>` blocks from output |
+| `think` | bool | `false` | When `true`, enables reasoning/thinking mode and preserves `<think>` blocks in output. When `false` (default), uses standard instruct mode and strips thinking blocks |
+| `stream` | bool | `false` | When `true`, returns a streaming response via RunPod's streaming API |
 | `top_k` | int | — | Top-K sampling |
 | `min_p` | float | — | Min-P sampling |
 | `presence_penalty` | float | — | Presence penalty |
@@ -219,6 +181,77 @@ All parameters are optional and go inside the `"input"` object:
 | `seed` | int | — | Random seed for reproducibility |
 | `stop` | string or list | — | Stop sequence(s) (max `MAX_STOP_SEQUENCES`) |
 | `model` / `model_name` | string | — | Label echoed back in the response `model` field |
+
+### Streaming
+
+Set `"stream": true` in the input to receive Server-Sent Events (SSE) via RunPod's streaming endpoint (`/stream`).
+
+- **Chat completions input**: each chunk is an OpenAI-compatible SSE object with `choices[].delta.content`
+- **Text prompt input**: each chunk is `{"response": "partial text"}`
+
+```bash
+# Submit a streaming job
+curl -X POST "https://api.runpod.ai/v2/${RUNPOD_ENDPOINT_ID}/run" \
+    -H 'Content-Type: application/json' \
+    -H "Authorization: Bearer ${RUNPOD_API_KEY}" \
+    -d '{"input":{"messages":[{"role":"user","content":"Hello"}],"stream":true}}'
+
+# Read stream chunks
+curl "https://api.runpod.ai/v2/${RUNPOD_ENDPOINT_ID}/stream/${JOB_ID}" \
+    -H "Authorization: Bearer ${RUNPOD_API_KEY}"
+```
+
+### Response Formats
+
+**Chat completions input** — returns the full OpenAI-compatible response from llama-server:
+
+```json
+{
+  "id": "chatcmpl-...",
+  "object": "chat.completion",
+  "model": "qwen3.5",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Here is a Python function to sort a list..."
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 25,
+    "completion_tokens": 150,
+    "total_tokens": 175
+  }
+}
+```
+
+**Text prompt input** — returns a simplified response:
+
+```json
+{
+  "response": "Recursion is when a function calls itself..."
+}
+```
+
+### Error Responses
+
+All errors follow a consistent format:
+
+```json
+{
+  "error": {
+    "message": "Description of what went wrong",
+    "type": "invalid_request_error"
+  }
+}
+```
+
+Error types:
+- `invalid_request_error` — bad input (missing fields, invalid params, content too long)
+- `server_error` — internal error (llama-server failure, unexpected response structure)
 
 ### curl Examples
 
@@ -273,7 +306,7 @@ curl -X POST "https://api.runpod.ai/v2/${RUNPOD_ENDPOINT_ID}/runsync" \
 
 ### Python Examples
 
-Set these shell variables (or create a `.env` file):
+Set these shell variables (or use a `.env` file with `python-dotenv`):
 
 ```bash
 export RUNPOD_API_KEY=your_api_key_here
@@ -373,6 +406,70 @@ print(output)
 
 ---
 
+## Think-Tag Handling
+
+Models that produce chain-of-thought reasoning (like Qwen3.5) wrap their thinking in `<think>...</think>` tags. The handler controls this with the `think` parameter and a `/think` or `/no_think` directive appended to the last user message:
+
+| `think` value | Directive appended | Post-processing |
+| --- | --- | --- |
+| `false` (default) | `/no_think` | Strips all `<think>...</think>` blocks and any `reasoning_content` field from the response |
+| `true` | `/think` | Preserves thinking content as-is |
+
+### Instruct mode (default)
+
+Standard chat — no thinking blocks in the output:
+
+```bash
+curl -X POST "https://api.runpod.ai/v2/${RUNPOD_ENDPOINT_ID}/runsync" \
+    -H 'Content-Type: application/json' \
+    -H "Authorization: Bearer ${RUNPOD_API_KEY}" \
+    -d '{
+      "input": {
+        "messages": [{"role": "user", "content": "Write a Python function to sort a list."}],
+        "max_tokens": 2048,
+        "temperature": 0.7
+      }
+    }'
+```
+
+### Reasoning/thinking mode
+
+Set `"think": true` to enable chain-of-thought reasoning. The model's `<think>` blocks are preserved in the response:
+
+```bash
+curl -X POST "https://api.runpod.ai/v2/${RUNPOD_ENDPOINT_ID}/runsync" \
+    -H 'Content-Type: application/json' \
+    -H "Authorization: Bearer ${RUNPOD_API_KEY}" \
+    -d '{
+      "input": {
+        "messages": [{"role": "user", "content": "Solve step by step: 23 * 47"}],
+        "think": true,
+        "max_tokens": 8192
+      }
+    }'
+```
+
+### Text prompt with thinking
+
+Works with the simple `prompt` input style too:
+
+```bash
+curl -X POST "https://api.runpod.ai/v2/${RUNPOD_ENDPOINT_ID}/runsync" \
+    -H 'Content-Type: application/json' \
+    -H "Authorization: Bearer ${RUNPOD_API_KEY}" \
+    -d '{
+      "input": {
+        "prompt": "What is the derivative of x^3 * sin(x)?",
+        "think": true,
+        "max_tokens": 4096
+      }
+    }'
+```
+
+The entrypoint passes `--reasoning-format qwen3` to llama-server, enabling native reasoning support.
+
+---
+
 ## Testing
 
 Run the full test suite:
@@ -387,7 +484,7 @@ The test suite covers:
 | Test file | Tests | What it covers |
 | --- | --- | --- |
 | `tests/test_handler.py` | 106 | Handler logic: input validation, chat completions, text prompts, error handling, think-tag stripping, generation params, server communication, health checks |
-| `tests/test_entrypoint.py` | 12 | Entrypoint script: mode switching, model selection, server flag construction, custom configs, error cases |
+| `tests/test_entrypoint.py` | 12 | Entrypoint script: model selection, server flag construction, custom configs, error cases |
 
 All tests run without GPU or llama-server — external dependencies are mocked.
 
@@ -398,7 +495,7 @@ All tests run without GPU or llama-server — external dependencies are mocked.
 All handler logs include the RunPod job ID for traceability (`[job=<id>]`). Key events logged:
 
 - **Cold start**: health check status, server readiness
-- **Per-request**: input keys, inference parameters, mode, message count
+- **Per-request**: input keys, inference parameters, model label, message count
 - **Post-inference**: elapsed time, prompt/completion/total token usage
 - **Errors**: client validation errors at `WARNING`, server errors at `ERROR` with full traceback
 
@@ -410,13 +507,16 @@ All handler logs include the RunPod job ID for traceability (`[job=<id>]`). Key 
 ├── src/
 │   ├── handler.py            # RunPod serverless handler (proxies to llama-server)
 │   └── __init__.py
+├── config/
+│   └── __init__.py           # Model config, GPU settings, generation defaults
 ├── tests/
 │   ├── test_handler.py       # Handler test suite (106 tests)
-│   └── test_entrypoint.py    # Entrypoint test suite (12 tests)
+│   ├── test_entrypoint.py    # Entrypoint test suite (12 tests)
+│   └── __init__.py
+├── handler.py                # Root entry point (imports from src/handler.py, starts RunPod)
 ├── Dockerfile                # Based on ghcr.io/ggml-org/llama.cpp:server-cuda
-├── entrypoint.sh             # Starts llama-server + handler (mode-aware)
+├── entrypoint.sh             # Starts llama-server + handler, monitors both processes
 ├── build_and_push.sh         # Build & push to Docker Hub
-├── download-models.sh        # Download GGUF models locally
-├── requirements.txt          # Python dependencies (runpod, huggingface_hub)
-└── env.example               # Example environment variables
+├── download-models.sh        # Download GGUF models from HuggingFace
+└── requirements.txt          # Python dependencies (runpod, huggingface_hub)
 ```

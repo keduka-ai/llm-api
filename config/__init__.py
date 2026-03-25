@@ -15,21 +15,9 @@ DEBUG = bool(int(os.environ.get("DEBUG", 0)))
 # ---------------------------------------------------------------------------
 MODEL_CONFIG = {
     "Qwen3.5-4B-Q4_1.gguf": {"n_ctx": 20_000, "chat_format": None, "n_ubatch": 1024},
-    "Phi-4-mini-reasoning-Q4_K_M.gguf": {"n_ctx": 10_000, "chat_format": None, "n_ubatch": 1024},
-}
-
-# Default context window (n_ctx) per model type (fallback when model not in MODEL_CONFIG)
-DEFAULT_N_CTX = {
-    "instruct": 90_000,
-    "reasoning": 70_000,
 }
 
 MODELS_DIR = os.environ.get("MODELS_DIR", "/models")
-
-model_paths = {
-    "instruct": "ai_api/models/Qwen3.5-4B-Q4_1.gguf",
-    "reasoning": "ai_api/models/Phi-4-mini-reasoning-Q4_K_M.gguf",
-}
 
 
 def get_model_config(model_path_str):

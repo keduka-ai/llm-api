@@ -25,7 +25,6 @@ _mock_runpod_module.serverless = _mock_runpod_serverless
 sys.modules["runpod"] = _mock_runpod_module
 sys.modules["runpod.serverless"] = _mock_runpod_serverless
 
-os.environ["RUNPOD_MODE"] = "instruct"
 os.environ["LLAMA_SERVER_URL"] = "http://127.0.0.1:8080"
 os.environ["LLAMA_HEALTH_TIMEOUT"] = "1"
 os.environ["LLAMA_HEALTH_INTERVAL"] = "0"
@@ -303,10 +302,10 @@ class TestHandlerChatCompletions:
         assert result["model"] == "primary"
 
     @patch("src.handler._server_chat_completion")
-    def test_model_label_defaults_to_mode(self, mock_server):
+    def test_model_label_defaults_to_qwen35(self, mock_server):
         mock_server.return_value = _make_response("ok")
         result = handler({"input": {"messages": [{"role": "user", "content": "Hi"}]}})
-        assert result["model"] == "instruct"
+        assert result["model"] == "qwen3.5"
 
     @patch("src.handler._server_chat_completion")
     def test_think_false_strips_tags(self, mock_server):
@@ -429,7 +428,8 @@ class TestHandlerChatCompletions:
         assert "choices" in result
         assert "response" not in result
         payload = mock_server.call_args[0][0]
-        assert payload["messages"][0]["content"] == "From messages"
+        # The handler appends /no_think directive to the last user message
+        assert payload["messages"][0]["content"] == "From messages\n/no_think"
 
     @patch("src.handler._server_chat_completion")
     def test_usage_info_preserved(self, mock_server):
@@ -483,7 +483,8 @@ class TestHandlerTextPrompt:
         assert msgs[0]["role"] == "system"
         assert msgs[0]["content"] == "You are a pirate."
         assert msgs[1]["role"] == "user"
-        assert msgs[1]["content"] == "Hello"
+        # The handler appends /no_think directive to the last user message
+        assert msgs[1]["content"] == "Hello\n/no_think"
 
     @patch("src.handler._server_chat_completion")
     def test_default_system_prompt(self, mock_server):
@@ -543,7 +544,8 @@ class TestHandlerTextPrompt:
         assert len(msgs) == 2
         assert msgs[0]["role"] == "system"
         assert msgs[1]["role"] == "user"
-        assert msgs[1]["content"] == "Hello"
+        # The handler appends /no_think directive to the last user message
+        assert msgs[1]["content"] == "Hello\n/no_think"
 
 
 # ===================================================================
