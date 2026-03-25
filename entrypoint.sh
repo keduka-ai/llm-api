@@ -41,10 +41,8 @@ SERVER_ARGS=(
     --metrics
 )
 
-# --flash-attn is a boolean flag (no argument); enable unless explicitly disabled
-if [ "${FLASH_ATTN_MODE:-on}" != "off" ]; then
-    SERVER_ARGS+=(--flash-attn)
-fi
+# --flash-attn requires a value: on, off, or auto
+SERVER_ARGS+=(--flash-attn "${FLASH_ATTN_MODE:-on}")
 
 # Enable reasoning-format only for reasoning mode
 if [ "$RUNPOD_MODE" = "reasoning" ]; then
