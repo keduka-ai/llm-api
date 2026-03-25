@@ -44,7 +44,7 @@ RunPod serverless endpoint for LLM inference powered by the official [llama.cpp]
 
 - **Base image**: `ghcr.io/ggml-org/llama.cpp:server-cuda` — the official llama.cpp CUDA server with up-to-date model support (Qwen3.5, Phi-4, etc.)
 - **Handler** (`src/handler.py`): a RunPod serverless handler that validates requests, proxies them to the local llama-server via HTTP, and post-processes responses (think-tag stripping, format normalization)
-- **Entrypoint** (`entrypoint.sh`): starts llama-server with the configured model and `--reasoning-format qwen3`, then launches the handler. Monitors both processes and exits if either crashes.
+- **Entrypoint** (`entrypoint.sh`): starts llama-server with the configured model and `--reasoning-format deepseek`, then launches the handler. Monitors both processes and exits if either crashes.
 
 ---
 
@@ -466,7 +466,7 @@ curl -X POST "https://api.runpod.ai/v2/${RUNPOD_ENDPOINT_ID}/runsync" \
     }'
 ```
 
-The entrypoint passes `--reasoning-format qwen3` to llama-server, enabling native reasoning support.
+The entrypoint passes `--reasoning-format deepseek` to llama-server, enabling native reasoning support.
 
 ---
 

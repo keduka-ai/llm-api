@@ -64,7 +64,7 @@ SERVER_ARGS=(
     --ubatch-size "${{N_UBATCH:-1024}}"
     --jinja
     --metrics
-    --reasoning-format qwen3
+    --reasoning-format deepseek
 )
 SERVER_ARGS+=(--flash-attn "${{FLASH_ATTN_MODE:-on}}")
 
@@ -123,10 +123,10 @@ class TestEntrypointModeSelection:
         }, expect_failure=True)
         assert "model file not found" in stderr
 
-    def test_reasoning_format_always_qwen3(self):
-        """--reasoning-format qwen3 is always included in server args."""
+    def test_reasoning_format_always_deepseek(self):
+        """--reasoning-format deepseek is always included in server args."""
         output = _run_entrypoint()
-        assert "--reasoning-format qwen3" in output
+        assert "--reasoning-format deepseek" in output
 
     def test_gpu_layers_forwarded(self):
         output = _run_entrypoint({"N_GPU_LAYERS": "42"})

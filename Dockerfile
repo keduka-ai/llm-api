@@ -55,6 +55,7 @@ RUN chmod +x /workspace/entrypoint.sh
 # Environment variables (see .env.example for full list)
 ENV MODELS_DIR=/models \
     MODEL_FILE=Qwen3.5-4B-Q4_1.gguf \
+    REASONING_FORMAT=deepseek \
     N_GPU_LAYERS=-1 \
     N_CTX=20000 \
     N_BATCH=512 \

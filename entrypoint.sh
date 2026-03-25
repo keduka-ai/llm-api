@@ -24,8 +24,13 @@ SERVER_ARGS=(
     --ubatch-size "${N_UBATCH:-1024}"
     --jinja
     --metrics
-    --reasoning-format qwen3
 )
+
+# Enable reasoning format (deepseek parses <think> tags for Qwen3.5 and similar models)
+REASONING_FMT="${REASONING_FORMAT:-deepseek}"
+if [ "$REASONING_FMT" != "none" ]; then
+    SERVER_ARGS+=(--reasoning-format "$REASONING_FMT")
+fi
 
 # --flash-attn requires a value: on, off, or auto
 SERVER_ARGS+=(--flash-attn "${FLASH_ATTN_MODE:-on}")
