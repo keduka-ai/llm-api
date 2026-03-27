@@ -25,6 +25,10 @@ resolve_model() {
             MODEL_FILE="Qwen3.5-4B-Q4_1.gguf"
             MODEL_URL="https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_1.gguf"
             ;;
+        qwen3.5-35b)
+            MODEL_FILE="Qwen3.5-35B-A3B-UD-Q4_K_XL.gguf"
+            MODEL_URL="https://huggingface.co/unsloth/Qwen3.5-35B-A3B-GGUF/resolve/main/Qwen3.5-35B-A3B-UD-Q4_K_XL.gguf"
+            ;;
         https://*)
             MODEL_FILE=$(basename "$1" | sed 's/?.*//' | tr -cd 'A-Za-z0-9._-')
             MODEL_URL="$1"
@@ -39,6 +43,7 @@ resolve_model() {
             echo "Available catalog models:" >&2
             echo "  qwen3.5-9b   Qwen3.5-9B-UD-Q4_K_XL.gguf  (default)" >&2
             echo "  qwen3.5-4b   Qwen3.5-4B-Q4_1.gguf" >&2
+            echo "  qwen3.5-35b  Qwen3.5-35B-A3B-UD-Q4_K_XL.gguf" >&2
             echo "" >&2
             echo "Or pass a direct HTTPS URL to any GGUF file." >&2
             exit 1
@@ -46,7 +51,7 @@ resolve_model() {
     esac
 }
 
-MODEL="${MODEL:-qwen3.5-9b}"
+MODEL="${MODEL:-qwen3.5-35b}"
 resolve_model "$MODEL"
 
 echo "Downloading $MODEL_FILE from $MODEL_URL ..."

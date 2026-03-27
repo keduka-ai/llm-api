@@ -9,6 +9,10 @@ import os
 import subprocess
 import tempfile
 import pytest
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from config import MODEL_CONFIG, get_model_config
 
 ENTRYPOINT = os.path.join(os.path.dirname(__file__), "..", "entrypoint.sh")
 
@@ -220,6 +224,38 @@ class TestEntrypointModeSelection:
             import shutil
             shutil.rmtree(models_dir, ignore_errors=True)
 
+    def test_qwen35_35b_alias_resolves(self):
+        """download-models.sh resolves qwen3.5-35b alias correctly."""
+        script = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "download-models.sh")
+        )
+        # Extract just the resolve_model function body (up to first closing brace)
+        # then call it directly, avoiding the rest of the script (wget, etc.)
+        wrapper = f"""#!/bin/bash
+set -e
+# Define resolve_model by sourcing just the function
+eval "$(awk '/^resolve_model\\(\\)/,/^\\}}/' '{script}')"
+resolve_model "qwen3.5-35b"
+echo "MODEL_FILE=$MODEL_FILE"
+echo "MODEL_URL=$MODEL_URL"
+"""
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".sh", delete=False, dir="/tmp/claude-1000/") as f:
+            f.write(wrapper)
+            f.flush()
+            os.chmod(f.name, 0o755)
+            tmp_path = f.name
+        try:
+            result = subprocess.run(
+                ["bash", tmp_path],
+                capture_output=True, text=True, timeout=5,
+            )
+            assert result.returncode == 0, f"Script failed: {result.stderr}"
+            assert "MODEL_FILE=Qwen3.5-35B-A3B-UD-Q4_K_XL.gguf" in result.stdout
+            assert "MODEL_URL=https://huggingface.co/unsloth/Qwen3.5-35B-A3B-GGUF/resolve/main/Qwen3.5-35B-A3B-UD-Q4_K_XL.gguf" in result.stdout
+        finally:
+            os.unlink(tmp_path)
+
     def test_fallback_when_no_env_and_no_marker(self):
         """When neither MODEL_FILE nor .active_model exists, falls back to default."""
         models_dir = f"/tmp/claude-1000/test_models_fallback_{os.getpid()}"
@@ -234,3 +270,17 @@ class TestEntrypointModeSelection:
         finally:
             import shutil
             shutil.rmtree(models_dir, ignore_errors=True)
+
+
+class TestModelConfig:
+
+    def test_qwen35_35b_in_model_config(self):
+        """Qwen3.5-35B-A3B GGUF has an entry in MODEL_CONFIG."""
+        assert "Qwen3.5-35B-A3B-UD-Q4_K_XL.gguf" in MODEL_CONFIG
+
+    def test_qwen35_35b_config_values(self):
+        """Qwen3.5-35B-A3B config has expected keys."""
+        cfg = get_model_config("Qwen3.5-35B-A3B-UD-Q4_K_XL.gguf")
+        assert "n_ctx" in cfg
+        assert "chat_format" in cfg
+        assert "n_ubatch" in cfg

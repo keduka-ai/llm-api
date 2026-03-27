@@ -132,6 +132,7 @@ The catalog is defined in `download-models.sh`:
 | --- | --- | --- |
 | `qwen3.5-9b` (default) | `Qwen3.5-9B-UD-Q4_K_XL.gguf` | [unsloth/Qwen3.5-9B-GGUF](https://huggingface.co/unsloth/Qwen3.5-9B-GGUF) |
 | `qwen3.5-4b` | `Qwen3.5-4B-Q4_1.gguf` | [unsloth/Qwen3.5-4B-GGUF](https://huggingface.co/unsloth/Qwen3.5-4B-GGUF) |
+| `qwen3.5-35b` | `Qwen3.5-35B-A3B-UD-Q4_K_XL.gguf` | [unsloth/Qwen3.5-35B-A3B-GGUF](https://huggingface.co/unsloth/Qwen3.5-35B-A3B-GGUF) |
 
 ### Using a catalog alias
 
