@@ -3,7 +3,15 @@
 set -e
 
 MODELS_DIR="${MODELS_DIR:-/models}"
-MODEL_FILENAME="${MODEL_FILE:-Qwen3.5-4B-Q4_1.gguf}"
+
+# Resolve model filename: explicit MODEL_FILE > .active_model marker > fallback
+if [ -n "$MODEL_FILE" ]; then
+    MODEL_FILENAME="$MODEL_FILE"
+elif [ -f "$MODELS_DIR/.active_model" ]; then
+    MODEL_FILENAME=$(cat "$MODELS_DIR/.active_model")
+else
+    MODEL_FILENAME="Qwen3.5-9B-UD-Q4_K_XL.gguf"
+fi
 MODEL_PATH="${MODELS_DIR}/${MODEL_FILENAME}"
 
 if [ ! -f "$MODEL_PATH" ]; then

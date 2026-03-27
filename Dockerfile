@@ -10,8 +10,9 @@ RUN ldconfig /app 2>/dev/null; true
 ENV LD_LIBRARY_PATH="/app:${LD_LIBRARY_PATH}" \
     PATH="/app:${PATH}"
 
-# Build args
-ARG MODEL_URL=""
+# Build args — MODEL selects from the catalog in download-models.sh
+# Use a catalog alias (e.g. "qwen3.5-9b") or a direct HTTPS URL to a GGUF file.
+ARG MODEL="qwen3.5-9b"
 
 # Install Python and pip (the llama.cpp image is minimal, no Python included)
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -31,19 +32,11 @@ RUN pip install --no-cache-dir -r /tmp/requirements.txt
 # Create models directory
 RUN mkdir -p /models
 
-# Download model at build time using download script or MODEL_URL fallback.
-# MODEL_URL is validated: only https:// allowed, filename sanitised.
+# Download model at build time via the catalog in download-models.sh.
+# MODEL is a catalog alias (e.g. "qwen3.5-9b") or a direct HTTPS URL.
 COPY download-models.sh /tmp/download-models.sh
 RUN chmod +x /tmp/download-models.sh && \
-    if [ -n "$MODEL_URL" ]; then \
-        case "$MODEL_URL" in https://*) ;; *) echo "ERROR: MODEL_URL must use https://" && exit 1;; esac && \
-        FILENAME=$(basename "$MODEL_URL" | sed 's/?.*//' | tr -cd 'A-Za-z0-9._-') && \
-        if [ -z "$FILENAME" ]; then echo "ERROR: could not derive filename from MODEL_URL" && exit 1; fi && \
-        echo "Downloading ${FILENAME} to /models/" && \
-        wget -q --show-progress -O "/models/${FILENAME}" "$MODEL_URL"; \
-    else \
-        MODELS_DIR=/models /tmp/download-models.sh; \
-    fi
+    MODEL="$MODEL" MODELS_DIR=/models /tmp/download-models.sh
 
 # Copy handler source, config, and entrypoint
 COPY src/ /workspace/src/
@@ -54,7 +47,6 @@ RUN chmod +x /workspace/entrypoint.sh
 
 # Environment variables (see .env.example for full list)
 ENV MODELS_DIR=/models \
-    MODEL_FILE=Qwen3.5-4B-Q4_1.gguf \
     REASONING_FORMAT=deepseek \
     N_GPU_LAYERS=-1 \
     N_CTX=20000 \

@@ -8,6 +8,7 @@ RunPod serverless endpoint for LLM inference powered by the official [llama.cpp]
 - [Quick Start](#quick-start)
 - [Configuration](#configuration)
   - [Environment Variables](#environment-variables)
+- [Swapping Models](#swapping-models)
 - [Deploy on RunPod](#deploy-on-runpod)
   - [Build the Docker Image](#1-build-the-docker-image)
   - [Create a RunPod Endpoint](#2-create-a-runpod-endpoint)
@@ -54,13 +55,18 @@ RunPod serverless endpoint for LLM inference powered by the official [llama.cpp]
 git clone https://github.com/keduka-ai/llm-api.git
 cd llm-api
 
-# 1. Build and push the Docker image
+# 1. Build with the default model (Qwen3.5-9B)
 docker login
-./build_and_push.sh \
-  --tag octagent-serverless \
-  --model-url https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_1.gguf
+docker build --build-arg MODEL=qwen3.5-9b -t myuser/octagent-serverless .
 
-# 2. Create an endpoint on RunPod and send requests
+# Or swap to a different catalog model
+docker build --build-arg MODEL=qwen3.5-4b -t myuser/octagent-serverless .
+
+# Or use a direct URL to any GGUF file
+docker build --build-arg MODEL=https://huggingface.co/bartowski/Phi-4-mini-instruct-GGUF/resolve/main/Phi-4-mini-instruct-Q4_K_M.gguf -t myuser/octagent-serverless .
+
+# 2. Push and create an endpoint on RunPod
+docker push myuser/octagent-serverless
 ```
 
 ---
@@ -75,7 +81,7 @@ All variables have sensible defaults and are optional. Set them via the RunPod e
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `MODEL_FILE` | `Qwen3.5-4B-Q4_1.gguf` | Filename of the GGUF model to load (must be in `MODELS_DIR`) |
+| `MODEL_FILE` | auto-detected | Filename of the GGUF model to load. Auto-detected from `.active_model` at startup; set this only to override |
 | `MODELS_DIR` | `/models` | Directory containing GGUF model files |
 
 #### GPU & Performance
@@ -114,22 +120,104 @@ All variables have sensible defaults and are optional. Set them via the RunPod e
 
 ---
 
+## Swapping Models
+
+The `MODEL` build arg selects which GGUF model to download at Docker build time. It accepts a catalog alias or a direct URL.
+
+### Model catalog
+
+The catalog is defined in `download-models.sh`:
+
+| Alias | GGUF file | Source |
+| --- | --- | --- |
+| `qwen3.5-9b` (default) | `Qwen3.5-9B-UD-Q4_K_XL.gguf` | [unsloth/Qwen3.5-9B-GGUF](https://huggingface.co/unsloth/Qwen3.5-9B-GGUF) |
+| `qwen3.5-4b` | `Qwen3.5-4B-Q4_1.gguf` | [unsloth/Qwen3.5-4B-GGUF](https://huggingface.co/unsloth/Qwen3.5-4B-GGUF) |
+
+### Using a catalog alias
+
+```bash
+docker build --build-arg MODEL=qwen3.5-4b -t myuser/octagent-serverless .
+```
+
+### Using a direct URL
+
+Pass any HTTPS URL to a GGUF file:
+
+```bash
+docker build --build-arg MODEL=https://huggingface.co/bartowski/Phi-4-mini-instruct-GGUF/resolve/main/Phi-4-mini-instruct-Q4_K_M.gguf -t myuser/octagent-serverless .
+```
+
+The filename is derived from the URL automatically.
+
+### Adding a new model to the catalog
+
+Edit the `resolve_model()` function in `download-models.sh`:
+
+```bash
+resolve_model() {
+    case "$1" in
+        qwen3.5-9b)
+            MODEL_FILE="Qwen3.5-9B-UD-Q4_K_XL.gguf"
+            MODEL_URL="https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-UD-Q4_K_XL.gguf"
+            ;;
+        # Add your model here:
+        my-model)
+            MODEL_FILE="MyModel-Q4_K_M.gguf"
+            MODEL_URL="https://huggingface.co/org/repo/resolve/main/MyModel-Q4_K_M.gguf"
+            ;;
+        ...
+    esac
+}
+```
+
+Then build with `--build-arg MODEL=my-model`.
+
+### How model auto-detection works
+
+At build time, `download-models.sh` writes the downloaded filename to `$MODELS_DIR/.active_model`. At runtime, `entrypoint.sh` resolves the model in this order:
+
+1. `MODEL_FILE` env var (explicit override)
+2. `$MODELS_DIR/.active_model` file (set by download-models.sh)
+3. Fallback: `Qwen3.5-9B-UD-Q4_K_XL.gguf`
+
+This means you do not need to set `MODEL_FILE` — it is auto-detected. Use `MODEL_FILE` only if you need to override the baked-in model at runtime (e.g., if you mount a different model file into the container).
+
+---
+
 ## Deploy on RunPod
 
 ### 1. Build the Docker Image
 
-The `build_and_push.sh` script builds and pushes the image to Docker Hub.
+The `build_and_push.sh` script builds and pushes the image to Docker Hub. You can also build directly with `docker build`.
+
+**Using docker build (recommended):**
 
 ```bash
 docker login
 
-# Build with a model baked into the image
+# Default model (Qwen3.5-9B)
+docker build --build-arg MODEL=qwen3.5-9b -t myuser/octagent-serverless .
+docker push myuser/octagent-serverless
+
+# Smaller model
+docker build --build-arg MODEL=qwen3.5-4b -t myuser/octagent-serverless .
+
+# Direct URL to any GGUF
+docker build --build-arg MODEL=https://huggingface.co/bartowski/Phi-4-mini-instruct-GGUF/resolve/main/Phi-4-mini-instruct-Q4_K_M.gguf -t myuser/octagent-serverless .
+```
+
+**Using build_and_push.sh:**
+
+```bash
+docker login
+
+# Uses download-models.sh with MODEL build arg (default: qwen3.5-9b)
+./build_and_push.sh --tag octagent-serverless
+
+# Or pass a direct model URL via --model-url
 ./build_and_push.sh \
   --tag octagent-serverless \
   --model-url https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_1.gguf
-
-# Or build without --model-url to use download-models.sh at build time
-./build_and_push.sh --tag octagent-serverless
 ```
 
 **Build script options:**
@@ -137,15 +225,14 @@ docker login
 | Flag | Default | Description |
 | --- | --- | --- |
 | `--tag` | `octagent-serverless` | Docker image tag |
-| `--model-url` | _(none)_ | HTTPS URL to a GGUF model file. If omitted, `download-models.sh` runs instead |
+| `--model-url` | _(none)_ | HTTPS URL to a GGUF model file. If omitted, `download-models.sh` runs with the `MODEL` build arg |
 
 ### 2. Create a RunPod Endpoint
 
 1. Go to [RunPod Serverless Console](https://www.runpod.io/console/serverless)
 2. Click **New Endpoint**
 3. Set **Container Image** to `<your-dockerhub-user>/<your-tag>` (e.g. `myuser/octagent-serverless`)
-4. Set **Environment Variables** — at minimum:
-   - `MODEL_FILE` = your GGUF model filename (e.g. `Qwen3.5-4B-Q4_1.gguf`)
+4. _(Optional)_ Set **Environment Variables** — `MODEL_FILE` is auto-detected and does not need to be set unless you want to override the baked-in model
 5. _(Optional)_ Add other variables from the tables above to tune performance
 6. Select your GPU type and configure scaling (min/max workers)
 
@@ -517,6 +604,6 @@ All handler logs include the RunPod job ID for traceability (`[job=<id>]`). Key 
 ├── Dockerfile                # Based on ghcr.io/ggml-org/llama.cpp:server-cuda
 ├── entrypoint.sh             # Starts llama-server + handler, monitors both processes
 ├── build_and_push.sh         # Build & push to Docker Hub
-├── download-models.sh        # Download GGUF models from HuggingFace
+├── download-models.sh        # Model catalog and download script
 └── requirements.txt          # Python dependencies (runpod, huggingface_hub)
 ```

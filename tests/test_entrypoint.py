@@ -34,10 +34,19 @@ def _run_entrypoint(env_overrides=None, expect_failure=False):
 
     # Create fake model files so the existence check passes (skip for failure tests)
     if not expect_failure:
-        os.makedirs(env["MODELS_DIR"], exist_ok=True)
+        models_dir = env["MODELS_DIR"]
+        os.makedirs(models_dir, exist_ok=True)
+        # Determine which model file will be resolved by the 3-step logic
         model_file = env.get("MODEL_FILE", "")
+        if not model_file:
+            active_marker = os.path.join(models_dir, ".active_model")
+            if os.path.exists(active_marker):
+                with open(active_marker, "r") as f:
+                    model_file = f.read().strip()
+            else:
+                model_file = "Qwen3.5-9B-UD-Q4_K_XL.gguf"
         if model_file:
-            path = os.path.join(env["MODELS_DIR"], model_file)
+            path = os.path.join(models_dir, model_file)
             if not os.path.exists(path):
                 with open(path, "w") as f:
                     f.write("fake")
@@ -46,7 +55,15 @@ def _run_entrypoint(env_overrides=None, expect_failure=False):
     wrapper = f"""#!/bin/bash
 set -e
 MODELS_DIR="${{MODELS_DIR:-/models}}"
-MODEL_FILENAME="${{MODEL_FILE:-Qwen3.5-4B-Q4_1.gguf}}"
+
+# Resolve model filename: explicit MODEL_FILE > .active_model marker > fallback
+if [ -n "$MODEL_FILE" ]; then
+    MODEL_FILENAME="$MODEL_FILE"
+elif [ -f "$MODELS_DIR/.active_model" ]; then
+    MODEL_FILENAME=$(cat "$MODELS_DIR/.active_model")
+else
+    MODEL_FILENAME="Qwen3.5-9B-UD-Q4_K_XL.gguf"
+fi
 MODEL_PATH="${{MODELS_DIR}}/${{MODEL_FILENAME}}"
 
 if [ ! -f "$MODEL_PATH" ]; then
@@ -163,3 +180,57 @@ class TestEntrypointModeSelection:
             "MODEL_FILE": "default-model.gguf",
         })
         assert "MODEL_PATH=/tmp/claude-1000/test_models/default-model.gguf" in output
+
+    def test_active_model_marker_used_when_no_model_file_env(self):
+        """When MODEL_FILE is unset and .active_model exists, its content is used."""
+        models_dir = f"/tmp/claude-1000/test_models_marker_{os.getpid()}"
+        os.makedirs(models_dir, exist_ok=True)
+        # Write the .active_model marker file
+        with open(os.path.join(models_dir, ".active_model"), "w") as f:
+            f.write("marker-model.gguf")
+        try:
+            output = _run_entrypoint({
+                "MODELS_DIR": models_dir,
+                "MODEL_FILE": "",  # empty means unset in the -n check
+            })
+            assert "MODEL_FILENAME=marker-model.gguf" in output
+            assert f"MODEL_PATH={models_dir}/marker-model.gguf" in output
+        finally:
+            import shutil
+            shutil.rmtree(models_dir, ignore_errors=True)
+
+    def test_model_file_env_overrides_active_model(self):
+        """When both MODEL_FILE env and .active_model exist, MODEL_FILE wins."""
+        models_dir = f"/tmp/claude-1000/test_models_override_{os.getpid()}"
+        os.makedirs(models_dir, exist_ok=True)
+        # Write the .active_model marker file
+        with open(os.path.join(models_dir, ".active_model"), "w") as f:
+            f.write("marker-model.gguf")
+        # Create the explicit model file
+        with open(os.path.join(models_dir, "explicit.gguf"), "w") as f:
+            f.write("fake")
+        try:
+            output = _run_entrypoint({
+                "MODELS_DIR": models_dir,
+                "MODEL_FILE": "explicit.gguf",
+            })
+            assert "MODEL_FILENAME=explicit.gguf" in output
+            assert "marker-model.gguf" not in output
+        finally:
+            import shutil
+            shutil.rmtree(models_dir, ignore_errors=True)
+
+    def test_fallback_when_no_env_and_no_marker(self):
+        """When neither MODEL_FILE nor .active_model exists, falls back to default."""
+        models_dir = f"/tmp/claude-1000/test_models_fallback_{os.getpid()}"
+        os.makedirs(models_dir, exist_ok=True)
+        try:
+            output = _run_entrypoint({
+                "MODELS_DIR": models_dir,
+                "MODEL_FILE": "",  # empty means unset in the -n check
+            })
+            assert "MODEL_FILENAME=Qwen3.5-9B-UD-Q4_K_XL.gguf" in output
+            assert f"MODEL_PATH={models_dir}/Qwen3.5-9B-UD-Q4_K_XL.gguf" in output
+        finally:
+            import shutil
+            shutil.rmtree(models_dir, ignore_errors=True)

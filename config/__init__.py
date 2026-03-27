@@ -14,8 +14,12 @@ DEBUG = bool(int(os.environ.get("DEBUG", 0)))
 # Model configuration
 # ---------------------------------------------------------------------------
 MODEL_CONFIG = {
+    "Qwen3.5-9B-UD-Q4_K_XL.gguf": {"n_ctx": 20_000, "chat_format": None, "n_ubatch": 1024},
     "Qwen3.5-4B-Q4_1.gguf": {"n_ctx": 20_000, "chat_format": None, "n_ubatch": 1024},
 }
+
+# Default config used when the model filename is not in MODEL_CONFIG
+DEFAULT_MODEL_CONFIG = {"n_ctx": 20_000, "chat_format": None, "n_ubatch": 1024}
 
 MODELS_DIR = os.environ.get("MODELS_DIR", "/models")
 
@@ -23,7 +27,7 @@ MODELS_DIR = os.environ.get("MODELS_DIR", "/models")
 def get_model_config(model_path_str):
     """Look up MODEL_CONFIG by the GGUF filename from a model path."""
     filename = os.path.basename(model_path_str)
-    return MODEL_CONFIG.get(filename, {})
+    return MODEL_CONFIG.get(filename, DEFAULT_MODEL_CONFIG)
 
 
 # ---------------------------------------------------------------------------
