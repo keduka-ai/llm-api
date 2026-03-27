@@ -14,13 +14,13 @@ DEBUG = bool(int(os.environ.get("DEBUG", 0)))
 # Model configuration
 # ---------------------------------------------------------------------------
 MODEL_CONFIG = {
-    "Qwen3.5-9B-UD-Q4_K_XL.gguf": {"n_ctx": 5_000, "chat_format": None, "n_ubatch": 1024},
-    "Qwen3.5-4B-Q4_1.gguf": {"n_ctx": 5_000, "chat_format": None, "n_ubatch": 1024},
+    "Qwen3.5-9B-UD-Q4_K_XL.gguf": {"n_ctx": 15_000, "chat_format": None, "n_ubatch": 1024},
+    "Qwen3.5-4B-Q4_1.gguf": {"n_ctx": 15_000, "chat_format": None, "n_ubatch": 1024},
     "Qwen3.5-35B-A3B-UD-Q4_K_XL.gguf": {"n_ctx": 5_000, "chat_format": None, "n_ubatch": 1024},
 }
 
 # Default config used when the model filename is not in MODEL_CONFIG
-DEFAULT_MODEL_CONFIG = {"n_ctx": 5_000, "chat_format": None, "n_ubatch": 1024}
+DEFAULT_MODEL_CONFIG = {"n_ctx": 15_000, "chat_format": None, "n_ubatch": 1024}
 
 MODELS_DIR = os.environ.get("MODELS_DIR", "/models")
 
