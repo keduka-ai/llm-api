@@ -122,19 +122,50 @@ All variables have sensible defaults and are optional. Set them via the RunPod e
 
 ## Swapping Models
 
-The `MODEL` build arg selects which GGUF model to download at Docker build time. It accepts a catalog alias or a direct URL.
+### Changing the default model
+
+The default model is defined in **one place**: `model-defaults.sh` at the repo root.
+
+```bash
+# model-defaults.sh
+DEFAULT_MODEL_ALIAS="qwen3.5-35b"
+DEFAULT_MODEL_FILENAME="Qwen3.5-35B-A3B-UD-Q4_K_XL.gguf"
+```
+
+To change which model is downloaded and used by default:
+
+1. **Edit `model-defaults.sh`** — set `DEFAULT_MODEL_ALIAS` to a catalog alias (see table below) and `DEFAULT_MODEL_FILENAME` to the matching GGUF filename.
+2. **Rebuild the Docker image** — the new default is picked up automatically by both `download-models.sh` (build time) and `entrypoint.sh` (runtime). No other files need editing.
+
+Example — switching the default to the 4B model:
+
+```bash
+# model-defaults.sh
+DEFAULT_MODEL_ALIAS="qwen3.5-4b"
+DEFAULT_MODEL_FILENAME="Qwen3.5-4B-Q4_1.gguf"
+```
+
+Then rebuild:
+
+```bash
+docker build -t myuser/octagent-serverless .
+```
 
 ### Model catalog
 
-The catalog is defined in `download-models.sh`:
+The catalog is defined in the `resolve_model()` function in `download-models.sh`:
 
 | Alias | GGUF file | Source |
 | --- | --- | --- |
-| `qwen3.5-9b` (default) | `Qwen3.5-9B-UD-Q4_K_XL.gguf` | [unsloth/Qwen3.5-9B-GGUF](https://huggingface.co/unsloth/Qwen3.5-9B-GGUF) |
+| `qwen3.5-9b` | `Qwen3.5-9B-UD-Q4_K_XL.gguf` | [unsloth/Qwen3.5-9B-GGUF](https://huggingface.co/unsloth/Qwen3.5-9B-GGUF) |
 | `qwen3.5-4b` | `Qwen3.5-4B-Q4_1.gguf` | [unsloth/Qwen3.5-4B-GGUF](https://huggingface.co/unsloth/Qwen3.5-4B-GGUF) |
-| `qwen3.5-35b` | `Qwen3.5-35B-A3B-UD-Q4_K_XL.gguf` | [unsloth/Qwen3.5-35B-A3B-GGUF](https://huggingface.co/unsloth/Qwen3.5-35B-A3B-GGUF) |
+| `qwen3.5-35b` (default) | `Qwen3.5-35B-A3B-UD-Q4_K_XL.gguf` | [unsloth/Qwen3.5-35B-A3B-GGUF](https://huggingface.co/unsloth/Qwen3.5-35B-A3B-GGUF) |
 
-### Using a catalog alias
+The current default is set in `model-defaults.sh`.
+
+### Using a catalog alias (one-off override)
+
+Override the default at build time without editing `model-defaults.sh`:
 
 ```bash
 docker build --build-arg MODEL=qwen3.5-4b -t myuser/octagent-serverless .
@@ -152,34 +183,35 @@ The filename is derived from the URL automatically.
 
 ### Adding a new model to the catalog
 
-Edit the `resolve_model()` function in `download-models.sh`:
+Two steps:
+
+1. Add a case to `resolve_model()` in `download-models.sh`:
 
 ```bash
-resolve_model() {
-    case "$1" in
-        qwen3.5-9b)
-            MODEL_FILE="Qwen3.5-9B-UD-Q4_K_XL.gguf"
-            MODEL_URL="https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-UD-Q4_K_XL.gguf"
-            ;;
-        # Add your model here:
         my-model)
             MODEL_FILE="MyModel-Q4_K_M.gguf"
             MODEL_URL="https://huggingface.co/org/repo/resolve/main/MyModel-Q4_K_M.gguf"
             ;;
-        ...
-    esac
+```
+
+2. _(Optional)_ Add a config entry in `config/__init__.py` if the model needs non-default `n_ctx` or `n_ubatch` values:
+
+```python
+MODEL_CONFIG = {
+    ...
+    "MyModel-Q4_K_M.gguf": {"n_ctx": 20_000, "chat_format": None, "n_ubatch": 1024},
 }
 ```
 
-Then build with `--build-arg MODEL=my-model`.
+Then build with `--build-arg MODEL=my-model`, or make it the default by updating `model-defaults.sh`.
 
 ### How model auto-detection works
 
 At build time, `download-models.sh` writes the downloaded filename to `$MODELS_DIR/.active_model`. At runtime, `entrypoint.sh` resolves the model in this order:
 
 1. `MODEL_FILE` env var (explicit override)
-2. `$MODELS_DIR/.active_model` file (set by download-models.sh)
-3. Fallback: `Qwen3.5-9B-UD-Q4_K_XL.gguf`
+2. `$MODELS_DIR/.active_model` file (written by `download-models.sh`)
+3. Fallback: `DEFAULT_MODEL_FILENAME` from `model-defaults.sh`
 
 This means you do not need to set `MODEL_FILE` — it is auto-detected. Use `MODEL_FILE` only if you need to override the baked-in model at runtime (e.g., if you mount a different model file into the container).
 
@@ -196,8 +228,8 @@ The `build_and_push.sh` script builds and pushes the image to Docker Hub. You ca
 ```bash
 docker login
 
-# Default model (Qwen3.5-9B)
-docker build --build-arg MODEL=qwen3.5-9b -t myuser/octagent-serverless .
+# Default model (set in model-defaults.sh)
+docker build -t myuser/octagent-serverless .
 docker push myuser/octagent-serverless
 
 # Smaller model
@@ -212,7 +244,7 @@ docker build --build-arg MODEL=https://huggingface.co/bartowski/Phi-4-mini-instr
 ```bash
 docker login
 
-# Uses download-models.sh with MODEL build arg (default: qwen3.5-9b)
+# Uses download-models.sh with the default from model-defaults.sh
 ./build_and_push.sh --tag octagent-serverless
 
 # Or pass a direct model URL via --model-url

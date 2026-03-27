@@ -12,7 +12,7 @@ ENV LD_LIBRARY_PATH="/app:${LD_LIBRARY_PATH}" \
 
 # Build args — MODEL selects from the catalog in download-models.sh
 # Use a catalog alias (e.g. "qwen3.5-9b") or a direct HTTPS URL to a GGUF file.
-ARG MODEL="qwen3.5-9b"
+ARG MODEL=""
 
 # Install Python and pip (the llama.cpp image is minimal, no Python included)
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -34,7 +34,7 @@ RUN mkdir -p /models
 
 # Download model at build time via the catalog in download-models.sh.
 # MODEL is a catalog alias (e.g. "qwen3.5-9b") or a direct HTTPS URL.
-COPY download-models.sh /tmp/download-models.sh
+COPY model-defaults.sh download-models.sh /tmp/
 RUN chmod +x /tmp/download-models.sh && \
     MODEL="$MODEL" MODELS_DIR=/models /tmp/download-models.sh
 
@@ -42,6 +42,7 @@ RUN chmod +x /tmp/download-models.sh && \
 COPY src/ /workspace/src/
 COPY handler.py /workspace/handler.py
 COPY config/ /workspace/config/
+COPY model-defaults.sh /workspace/model-defaults.sh
 COPY entrypoint.sh /workspace/entrypoint.sh
 RUN chmod +x /workspace/entrypoint.sh
 

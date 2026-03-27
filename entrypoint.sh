@@ -2,6 +2,8 @@
 # Entrypoint: start llama-server in the background, then launch the RunPod handler.
 set -e
 
+source "$(dirname "$0")/model-defaults.sh"
+
 MODELS_DIR="${MODELS_DIR:-/models}"
 
 # Resolve model filename: explicit MODEL_FILE > .active_model marker > fallback
@@ -10,7 +12,7 @@ if [ -n "$MODEL_FILE" ]; then
 elif [ -f "$MODELS_DIR/.active_model" ]; then
     MODEL_FILENAME=$(cat "$MODELS_DIR/.active_model")
 else
-    MODEL_FILENAME="Qwen3.5-9B-UD-Q4_K_XL.gguf"
+    MODEL_FILENAME="$DEFAULT_MODEL_FILENAME"
 fi
 MODEL_PATH="${MODELS_DIR}/${MODEL_FILENAME}"
 

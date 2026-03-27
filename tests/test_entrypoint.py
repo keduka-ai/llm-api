@@ -15,6 +15,20 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from config import MODEL_CONFIG, get_model_config
 
 ENTRYPOINT = os.path.join(os.path.dirname(__file__), "..", "entrypoint.sh")
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+MODEL_DEFAULTS_SH = os.path.join(REPO_ROOT, "model-defaults.sh")
+
+
+def _read_model_defaults():
+    """Parse model-defaults.sh and return a dict of variable assignments."""
+    defaults = {}
+    with open(MODEL_DEFAULTS_SH, "r") as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                key, _, value = line.partition("=")
+                defaults[key] = value.strip('"').strip("'")
+    return defaults
 
 
 def _run_entrypoint(env_overrides=None, expect_failure=False):
@@ -48,7 +62,7 @@ def _run_entrypoint(env_overrides=None, expect_failure=False):
                 with open(active_marker, "r") as f:
                     model_file = f.read().strip()
             else:
-                model_file = "Qwen3.5-9B-UD-Q4_K_XL.gguf"
+                model_file = _read_model_defaults()["DEFAULT_MODEL_FILENAME"]
         if model_file:
             path = os.path.join(models_dir, model_file)
             if not os.path.exists(path):
@@ -58,6 +72,7 @@ def _run_entrypoint(env_overrides=None, expect_failure=False):
     # Wrapper mirrors the entrypoint.sh variable-setup logic
     wrapper = f"""#!/bin/bash
 set -e
+source "{MODEL_DEFAULTS_SH}"
 MODELS_DIR="${{MODELS_DIR:-/models}}"
 
 # Resolve model filename: explicit MODEL_FILE > .active_model marker > fallback
@@ -66,7 +81,7 @@ if [ -n "$MODEL_FILE" ]; then
 elif [ -f "$MODELS_DIR/.active_model" ]; then
     MODEL_FILENAME=$(cat "$MODELS_DIR/.active_model")
 else
-    MODEL_FILENAME="Qwen3.5-9B-UD-Q4_K_XL.gguf"
+    MODEL_FILENAME="$DEFAULT_MODEL_FILENAME"
 fi
 MODEL_PATH="${{MODELS_DIR}}/${{MODEL_FILENAME}}"
 
@@ -258,6 +273,8 @@ echo "MODEL_URL=$MODEL_URL"
 
     def test_fallback_when_no_env_and_no_marker(self):
         """When neither MODEL_FILE nor .active_model exists, falls back to default."""
+        defaults = _read_model_defaults()
+        default_filename = defaults["DEFAULT_MODEL_FILENAME"]
         models_dir = f"/tmp/claude-1000/test_models_fallback_{os.getpid()}"
         os.makedirs(models_dir, exist_ok=True)
         try:
@@ -265,11 +282,73 @@ echo "MODEL_URL=$MODEL_URL"
                 "MODELS_DIR": models_dir,
                 "MODEL_FILE": "",  # empty means unset in the -n check
             })
-            assert "MODEL_FILENAME=Qwen3.5-9B-UD-Q4_K_XL.gguf" in output
-            assert f"MODEL_PATH={models_dir}/Qwen3.5-9B-UD-Q4_K_XL.gguf" in output
+            assert f"MODEL_FILENAME={default_filename}" in output
+            assert f"MODEL_PATH={models_dir}/{default_filename}" in output
         finally:
             import shutil
             shutil.rmtree(models_dir, ignore_errors=True)
+
+
+class TestModelDefaults:
+
+    def test_model_defaults_file_exists(self):
+        """model-defaults.sh exists at repo root."""
+        assert os.path.isfile(MODEL_DEFAULTS_SH)
+
+    def test_model_defaults_has_alias(self):
+        """model-defaults.sh defines DEFAULT_MODEL_ALIAS."""
+        defaults = _read_model_defaults()
+        assert "DEFAULT_MODEL_ALIAS" in defaults
+        assert len(defaults["DEFAULT_MODEL_ALIAS"]) > 0
+
+    def test_model_defaults_has_filename(self):
+        """model-defaults.sh defines DEFAULT_MODEL_FILENAME."""
+        defaults = _read_model_defaults()
+        assert "DEFAULT_MODEL_FILENAME" in defaults
+        assert defaults["DEFAULT_MODEL_FILENAME"].endswith(".gguf")
+
+    def test_alias_resolves_to_filename(self):
+        """The DEFAULT_MODEL_ALIAS resolves to DEFAULT_MODEL_FILENAME in download-models.sh."""
+        defaults = _read_model_defaults()
+        alias = defaults["DEFAULT_MODEL_ALIAS"]
+        expected_file = defaults["DEFAULT_MODEL_FILENAME"]
+        script = os.path.join(REPO_ROOT, "download-models.sh")
+        wrapper = f"""#!/bin/bash
+set -e
+eval "$(awk '/^resolve_model\\(\\)/,/^\\}}/' '{script}')"
+resolve_model "{alias}"
+echo "MODEL_FILE=$MODEL_FILE"
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".sh", delete=False, dir="/tmp/claude-1000/") as f:
+            f.write(wrapper)
+            f.flush()
+            os.chmod(f.name, 0o755)
+            tmp_path = f.name
+        try:
+            result = subprocess.run(
+                ["bash", tmp_path],
+                capture_output=True, text=True, timeout=5,
+            )
+            assert result.returncode == 0, f"Script failed: {result.stderr}"
+            assert f"MODEL_FILE={expected_file}" in result.stdout
+        finally:
+            os.unlink(tmp_path)
+
+    def test_download_script_uses_default_alias(self):
+        """download-models.sh sources model-defaults.sh for its default MODEL."""
+        script = os.path.join(REPO_ROOT, "download-models.sh")
+        with open(script, "r") as f:
+            content = f.read()
+        assert "$DEFAULT_MODEL_ALIAS" in content, \
+            "download-models.sh should use $DEFAULT_MODEL_ALIAS from model-defaults.sh"
+
+    def test_entrypoint_uses_default_filename(self):
+        """entrypoint.sh sources model-defaults.sh for its fallback filename."""
+        script = os.path.join(REPO_ROOT, "entrypoint.sh")
+        with open(script, "r") as f:
+            content = f.read()
+        assert "$DEFAULT_MODEL_FILENAME" in content, \
+            "entrypoint.sh should use $DEFAULT_MODEL_FILENAME from model-defaults.sh"
 
 
 class TestModelConfig:

@@ -9,6 +9,8 @@
 # entrypoint.sh can auto-detect it without a separate MODEL_FILE variable.
 set -e
 
+source "$(dirname "$0")/model-defaults.sh"
+
 MODELS_DIR="${MODELS_DIR:-./models}"
 mkdir -p "$MODELS_DIR"
 
@@ -51,7 +53,7 @@ resolve_model() {
     esac
 }
 
-MODEL="${MODEL:-qwen3.5-35b}"
+MODEL="${MODEL:-$DEFAULT_MODEL_ALIAS}"
 resolve_model "$MODEL"
 
 echo "Downloading $MODEL_FILE from $MODEL_URL ..."
