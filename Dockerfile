@@ -14,20 +14,23 @@ ENV LD_LIBRARY_PATH="/app:${LD_LIBRARY_PATH}" \
 # Use a catalog alias (e.g. "qwen3.5-9b") or a direct HTTPS URL to a GGUF file.
 ARG MODEL=""
 
-# Install Python and pip (the llama.cpp image is minimal, no Python included)
+# Install system dependencies (the llama.cpp image is minimal)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 \
-    python3-pip \
     git \
     wget \
-    && ln -sf /usr/bin/python3 /usr/bin/python \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+# Install uv for fast, reliable Python package management
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+# Install Python 3.13 via uv and symlink into PATH
+RUN uv python install 3.13 \
+    && ln -sf $(uv python find 3.13) /usr/local/bin/python3 \
+    && ln -sf $(uv python find 3.13) /usr/local/bin/python
 
 # Install RunPod and HuggingFace Hub (pinned in requirements.txt)
 COPY requirements.txt /tmp/requirements.txt
-RUN pip install --no-cache-dir -r /tmp/requirements.txt
+RUN uv pip install --no-cache --system --python 3.13 -r /tmp/requirements.txt
 
 # Create models directory
 RUN mkdir -p /models
