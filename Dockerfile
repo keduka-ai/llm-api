@@ -23,14 +23,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Install uv for fast, reliable Python package management
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
-# Install Python 3.13 via uv and symlink into PATH
-RUN uv python install 3.13 \
-    && ln -sf $(uv python find 3.13) /usr/local/bin/python3 \
-    && ln -sf $(uv python find 3.13) /usr/local/bin/python
+# Create venv with Python 3.13 via uv
+RUN uv venv --python 3.13 /opt/venv
+ENV PATH="/opt/venv/bin:${PATH}" \
+    VIRTUAL_ENV="/opt/venv"
 
 # Install RunPod and HuggingFace Hub (pinned in requirements.txt)
 COPY requirements.txt /tmp/requirements.txt
-RUN uv pip install --no-cache --system --python 3.13 -r /tmp/requirements.txt
+RUN uv pip install --no-cache -r /tmp/requirements.txt
 
 # Create models directory
 RUN mkdir -p /models
