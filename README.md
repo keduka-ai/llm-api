@@ -1,4 +1,18 @@
-# Gemma 4 E2B-it — RunPod Serverless
+<div align="center">
+
+<a href="https://keduka.com"><img src="https://avatars.githubusercontent.com/u/136940523?s=200&v=4" alt="Keduka Cognitive Services" width="96" height="96" /></a>
+
+# Gemma 4 E2B-it · RunPod Serverless
+
+**OpenAI-compatible Gemma inference on RunPod serverless — powered by llama.cpp.**
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![tests](https://img.shields.io/badge/tests-62%20passing-brightgreen.svg)](tests) [![Model](https://img.shields.io/badge/model-Gemma%204%20E2B--it-1f6feb.svg)](https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF) [![Runtime](https://img.shields.io/badge/runtime-llama.cpp%20CUDA-44cc11.svg)](https://github.com/ggml-org/llama.cpp) [![Deploy](https://img.shields.io/badge/deploy-RunPod%20Serverless-673ab7.svg)](https://www.runpod.io/console/serverless)
+
+A project by **[Keduka Cognitive Services (KCS)](https://keduka.com)**
+
+</div>
+
+---
 
 A **RunPod serverless** inference worker for **Gemma 4 E2B-it**, served by
 [`llama.cpp`](https://github.com/ggml-org/llama.cpp) with CUDA. One Docker
@@ -428,3 +442,18 @@ requirements.txt      # runtime deps (runpod, huggingface_hub)
 requirements-dev.txt  # test deps (pytest)
 tests/                # handler + entrypoint test suites
 ```
+
+## License & ownership
+
+© 2026 **Keduka Cognitive Services (KCS)**. Released under the
+[MIT License](LICENSE).
+
+---
+
+<div align="center">
+
+Built and maintained by **[Keduka Cognitive Services (KCS)](https://keduka.com)**
+
+[Website](https://keduka.com) · [GitHub](https://github.com/keduka-ai) · [LinkedIn](https://www.linkedin.com/company/keduka-cognitive-services) · [info@keduka.com](mailto:info@keduka.com)
+
+</div>
