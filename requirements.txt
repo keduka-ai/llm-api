@@ -1,2 +1,5 @@
-runpod==1.8.1
-huggingface_hub==1.7.2
+# Runtime dependencies for the RunPod serverless worker.
+# The handler itself uses only the Python stdlib (urllib) to talk to the
+# local llama-server; runpod provides the serverless entry point.
+runpod>=1.8,<2.0
+huggingface_hub>=0.27,<2.0

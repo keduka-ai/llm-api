@@ -1,0 +1,16 @@
+# Keep the build context small and the image clean.
+.venv/
+venv/
+.git/
+.idea/
+.vscode/
+__pycache__/
+*.pyc
+.pytest_cache/
+models/
+# Old docker-compose stack (not used by the serverless image).
+api/
+nginx/
+docker-compose.yml
+README.html
+.docs/

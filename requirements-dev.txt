@@ -1,0 +1,3 @@
+# Dev/test dependencies. The handler tests mock `runpod` and the
+# llama-server HTTP calls, so neither runtime dep is needed to run them.
+pytest>=8.0,<9.0
