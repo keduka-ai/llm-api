@@ -33,8 +33,8 @@ build_server_args() {
         --port "${LLAMA_PORT:-8080}"
         --n-gpu-layers "${N_GPU_LAYERS:--1}"
         --ctx-size "${N_CTX:-40192}"
-        --batch-size "${N_BATCH:-512}"
-        --ubatch-size "${N_UBATCH:-1024}"
+        --batch-size "${N_BATCH:-4096}"
+        --ubatch-size "${N_UBATCH:-2048}"
         --flash-attn "${FLASH_ATTN_MODE:-on}"
         --jinja
         --metrics
