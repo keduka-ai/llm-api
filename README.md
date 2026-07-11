@@ -6,7 +6,7 @@
 
 **OpenAI-compatible Gemma inference on RunPod serverless — powered by llama.cpp.**
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![tests](https://img.shields.io/badge/tests-62%20passing-brightgreen.svg)](tests) [![Model](https://img.shields.io/badge/model-Gemma%204%20E2B--it-1f6feb.svg)](https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF) [![Runtime](https://img.shields.io/badge/runtime-llama.cpp%20CUDA-44cc11.svg)](https://github.com/ggml-org/llama.cpp) [![Deploy](https://img.shields.io/badge/deploy-RunPod%20Serverless-673ab7.svg)](https://www.runpod.io/console/serverless)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![tests](https://img.shields.io/badge/tests-220%20passing-brightgreen.svg)](tests) [![Model](https://img.shields.io/badge/model-Gemma%204%20E2B--it-1f6feb.svg)](https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF) [![Runtime](https://img.shields.io/badge/runtime-llama.cpp%20CUDA-44cc11.svg)](https://github.com/ggml-org/llama.cpp) [![Deploy](https://img.shields.io/badge/deploy-RunPod%20Serverless-673ab7.svg)](https://www.runpod.io/console/serverless)
 
 A project by **[Keduka Cognitive Services (KCS)](https://keduka.com)**
 
@@ -113,6 +113,85 @@ handler injects a natural-language instruction asking the model to reason inside
 `<think>...</think>` tags. When `think=false` (default), any `<think>` block is
 stripped from the output, so callers always get a clean answer.
 
+### Dynamic persona & plan (default system prompt)
+
+Text-prompt jobs that omit `system_prompt` don't get a static assistant persona.
+The built-in default combines two instructions:
+
+- **`PERSONA_INSTRUCTION`** — first draft a task-specific expert persona inside
+  `<persona>...</persona>` tags (subject, topic, sub-topic, "You are an expert
+  in… Your main objective is…"), then answer as that persona.
+- **`PLAN_INSTRUCTION`** — next, write a short numbered plan (≤ 5 steps) inside
+  `<plan>...</plan>` tags, then follow it in the answer.
+
+The handler strips both blocks from the output — non-streaming responses the
+same way it strips `<think>`, and streaming responses through an incremental
+filter that handles tags split across chunks — so callers only ever see the
+final answer. Passing your own `system_prompt` (or a chat-style `messages`
+list) bypasses the injected instructions; setting the `DEFAULT_SYSTEM_PROMPT`
+env var replaces them.
+
+## Python client (`llm-api-client`)
+
+This repo ships a **zero-dependency Python client** for the endpoint:
+`client/llm_api_client`, packaged by the root `pyproject.toml`. It speaks the
+job contract above — builds the `{"input": ...}` envelope, unwraps
+`{"output": ...}` — and adds the retry/polling plumbing a scaled-to-zero
+serverless endpoint needs. Stdlib-only (`urllib`), Python ≥ 3.10.
+
+Install it from git in your requirements file:
+
+```
+llm-api-client @ git+https://github.com/keduka-ai/llm-api@feature/gemma-4-E2B-runpod-agents
+```
+
+Point it at your endpoint via environment variables and call it:
+
+```python
+# env: LLM_URL=https://api.runpod.ai/v2/<ENDPOINT_ID>/runsync
+#      RUNPOD_API_KEY=...
+from llm_api_client import Agent, CustomLLM
+
+llm = CustomLLM(system_message="You are concise.")
+print(llm("Explain MoE in one sentence."))
+
+agent = Agent(agent_name="Kedu Ka", think=True)
+print(agent("Explain quantum entanglement step by step."))
+
+for chunk in agent.stream("Write a haiku about GPUs."):
+    print(chunk, end="", flush=True)
+```
+
+What it handles for you:
+
+- **Retries** — transient HTTP statuses (408/429/5xx) and transport errors are
+  retried with exponential backoff (`max_retries=3`, `retry_backoff=1.0`).
+- **Queued jobs** — a `/runsync` reply that comes back `IN_QUEUE` /
+  `IN_PROGRESS` (past RunPod's sync window) is polled via `/status/<id>` until
+  it completes or `timeout` expires.
+- **Readable errors** — 4xx/5xx bodies are parsed so you get
+  `RuntimeError: LLM endpoint HTTP 400: 'max_tokens' must be a positive integer`
+  instead of a bare `HTTP Error 400`; `FAILED` jobs and worker error envelopes
+  also raise.
+- **Streaming** — `stream()` submits via `/run` and yields text chunks from
+  `/stream/<id>`.
+- **Empty completions** — logged by default; set `raise_on_empty=True`
+  (constructor or per call) to turn the context-overflow failure mode into an
+  explicit error.
+
+Every job parameter in the table above can be set on the instance or overridden
+per call (`temperature`, `max_tokens`, `think`, `seed`, `system_message`, ...);
+anything else — `top_p`, `stop`, etc. — goes through `custom_payload`. Client
+configuration is read from env at construction time: `LLM_URL`,
+`RUNPOD_API_KEY`, `DEFAULT_MODEL_NAME`, `DEFAULT_MAX_TOKENS`, `LLM_TIMEOUT`.
+With no `LLM_URL` set it targets `http://localhost:8000/runsync`, which is where
+`python src/handler.py --rp_serve_api` serves the handler locally.
+
+The client's contract coverage lives in `tests/test_llms.py`, next to the
+handler tests — a schema change that breaks the contract fails the suite in the
+same PR that introduces it. The client is **not** copied into the worker image;
+it exists purely for callers.
+
 ## Examples by language
 
 All examples call the **synchronous** endpoint (`/runsync`) with the text-prompt
@@ -144,6 +223,10 @@ curl -s https://api.runpod.ai/v2/$ENDPOINT_ID/runsync \
 ```
 
 ### Python
+
+The simplest option is the bundled zero-dependency client — see
+[Python client (`llm-api-client`)](#python-client-llm-api-client). With plain
+`requests`:
 
 ```python
 import os, requests
@@ -399,7 +482,7 @@ is a copy-paste template.
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `DEFAULT_SYSTEM_PROMPT` | _(built-in helpful-assistant prompt)_ | System prompt for text-prompt jobs that omit `system_prompt`. |
+| `DEFAULT_SYSTEM_PROMPT` | _(persona + plan instructions — see [Dynamic persona & plan](#dynamic-persona--plan-default-system-prompt))_ | System prompt for text-prompt jobs that omit `system_prompt`. |
 | `DEFAULT_MAX_TOKENS` | `4096` | Default `max_tokens` when the request omits it. |
 | `MAX_GENERATION_TOKENS` | `40192` | Hard cap on `max_tokens` (rejected above this). |
 | `MAX_MESSAGES` | `256` | Max chat messages per request. |
@@ -414,9 +497,10 @@ uv pip install --python .venv/bin/python -r requirements-dev.txt   # if network 
 .venv/bin/python -m unittest discover -s tests -t .
 ```
 
-Tests mock the `runpod` module and the llama-server HTTP calls, so they run with
-no GPU, no network, and no model. A full image build/run requires a Docker + GPU
-host with access to `ghcr.io` and the model host.
+Tests mock the `runpod` module and all HTTP calls (llama-server for the
+handler, `urlopen` for the client), so they run with no GPU, no network, and no
+model. A full image build/run requires a Docker + GPU host with access to
+`ghcr.io` and the model host.
 
 ## Backward compatibility
 
@@ -430,17 +514,19 @@ bump + CHANGELOG).
 ## Project layout
 
 ```
-handler.py            # RunPod entry point
-src/handler.py        # handler: validation, proxy, streaming, think handling
-config/__init__.py    # per-model context sizes, GPU + generation defaults
-entrypoint.sh         # starts llama-server + handler, supervises PIDs
-download-models.sh    # GGUF catalog (alias or HTTPS URL)
-model-defaults.sh     # default model (single source of truth)
-Dockerfile            # llama.cpp CUDA base + handler overlay + baked model
-build_and_push.sh     # build + push to Docker Hub
-requirements.txt      # runtime deps (runpod, huggingface_hub)
-requirements-dev.txt  # test deps (pytest)
-tests/                # handler + entrypoint test suites
+handler.py               # RunPod entry point
+src/handler.py           # handler: validation, proxy, streaming, think handling
+client/llm_api_client/   # Python client package (CustomLLM / Agent) — not in the image
+pyproject.toml           # packages the client only (zero runtime deps)
+config/__init__.py       # per-model context sizes, GPU + generation defaults
+entrypoint.sh            # starts llama-server + handler, supervises PIDs
+download-models.sh       # GGUF catalog (alias or HTTPS URL)
+model-defaults.sh        # default model (single source of truth)
+Dockerfile               # llama.cpp CUDA base + handler overlay + baked model
+build_and_push.sh        # build + push to Docker Hub
+requirements.txt         # runtime deps (runpod, huggingface_hub)
+requirements-dev.txt     # test deps (pytest)
+tests/                   # handler + entrypoint + client test suites
 ```
 
 ## License & ownership

@@ -43,9 +43,27 @@ def _log_with_job(level, job_id, msg, *args, **kwargs):
 # ---------------------------------------------------------------------------
 LLAMA_SERVER_URL = os.environ.get("LLAMA_SERVER_URL", "http://127.0.0.1:8080")
 
+# Default system prompt: rather than a static assistant persona, instruct the
+# model to draft a task-specific expert persona inside <persona>...</persona>
+# tags and a short plan inside <plan>...</plan> tags before answering. Both
+# blocks are stripped from non-streaming output the same way <think> blocks
+# are, so callers only ever see the final answer.
+PERSONA_INSTRUCTION = (
+    "First, silently determine the subject, topic, and sub-topic of the "
+    "user's request, and write a concise persona for the expert best suited "
+    "to answer it inside <persona>...</persona> tags — \"You are an expert "
+    "in ... Your main objective is ...\" — in under 150 words. Then, acting "
+    "as that persona, answer the user's request. Never mention the persona "
+    "or the tags in your final answer."
+)
+PLAN_INSTRUCTION = (
+    "Next, before answering, write a short numbered plan of the steps your "
+    "answer will follow inside <plan>...</plan> tags — no more than 5 steps. "
+    "Then follow that plan in your answer. Never mention the plan or the "
+    "tags in your final answer."
+)
 DEFAULT_SYSTEM_PROMPT = os.environ.get(
-    "DEFAULT_SYSTEM_PROMPT",
-    "You are a highly knowledgeable, kind, and helpful assistant.",
+    "DEFAULT_SYSTEM_PROMPT", f"{PERSONA_INSTRUCTION}\n\n{PLAN_INSTRUCTION}"
 )
 DEFAULT_MODEL_LABEL = os.environ.get("DEFAULT_MODEL_NAME", "gemma-4-e2b-it")
 
@@ -82,6 +100,8 @@ THINK_INSTRUCTION = (
 )
 
 _THINK_PATTERN = re.compile(r"<think>.*?</think>", re.DOTALL)
+_PERSONA_PATTERN = re.compile(r"<persona>.*?</persona>", re.DOTALL)
+_PLAN_PATTERN = re.compile(r"<plan>.*?</plan>", re.DOTALL)
 
 
 # ---------------------------------------------------------------------------
@@ -149,14 +169,29 @@ if os.environ.get("SKIP_HEALTH_CHECK", "0") != "1":
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+def _strip_tag_blocks(text, pattern, open_tag, close_tag):
+    """Remove <tag>...</tag> blocks plus any dangling partial block."""
+    cleaned = pattern.sub("", text)
+    if open_tag in cleaned:
+        cleaned = cleaned[: cleaned.index(open_tag)]
+    if close_tag in cleaned:
+        cleaned = cleaned.split(close_tag)[-1]
+    return cleaned.strip()
+
+
 def _strip_think_tags(text):
     """Remove <think>...</think> blocks and any trailing partial block."""
-    cleaned = _THINK_PATTERN.sub("", text)
-    if "<think>" in cleaned:
-        cleaned = cleaned[: cleaned.index("<think>")]
-    if "</think>" in cleaned:
-        cleaned = cleaned.split("</think>")[-1]
-    return cleaned.strip()
+    return _strip_tag_blocks(text, _THINK_PATTERN, "<think>", "</think>")
+
+
+def _strip_persona_tags(text):
+    """Remove <persona>...</persona> blocks and any trailing partial block."""
+    return _strip_tag_blocks(text, _PERSONA_PATTERN, "<persona>", "</persona>")
+
+
+def _strip_plan_tags(text):
+    """Remove <plan>...</plan> blocks and any trailing partial block."""
+    return _strip_tag_blocks(text, _PLAN_PATTERN, "<plan>", "</plan>")
 
 
 def _error(message, error_type):
@@ -258,20 +293,143 @@ def _strip_reasoning(result):
             msg["content"] = _strip_think_tags(content)
 
 
-def _streaming_generator(job_id, payload, model_label, is_text_prompt):
-    """Yield SSE chunks from llama-server for RunPod streaming responses."""
+def _strip_meta(result):
+    """Remove <persona> and <plan> blocks from each choice message.
+
+    Unlike think stripping this is unconditional: these blocks are
+    handler-injected meta-content (see PERSONA_INSTRUCTION and
+    PLAN_INSTRUCTION), never something the caller asked to see.
+    """
+    for choice in result.get("choices", []):
+        if not isinstance(choice, dict):
+            continue
+        msg = choice.get("message")
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content", "")
+        if content and ("<persona>" in content or "</persona>" in content):
+            content = _strip_persona_tags(content)
+        if content and ("<plan>" in content or "</plan>" in content):
+            content = _strip_plan_tags(content)
+        msg["content"] = content
+
+
+class _StreamTagFilter:
+    """Incrementally strip <persona>/<plan> blocks from streamed text.
+
+    Streaming deltas can split a tag anywhere (`<perso` + `na>`), so plain
+    per-chunk regex stripping cannot work. This filter emits text as soon as
+    it provably cannot belong to one of the tags, holds back anything that
+    could still turn into a tag, and discards everything inside an open
+    block. `flush()` releases a held partial prefix that never became a tag;
+    a block left open at stream end stays suppressed (matching the
+    non-streaming dangling-open behavior).
+    """
+
+    TAGS = ("persona", "plan")
+
+    def __init__(self, tags=None):
+        self._tags = tuple(tags) if tags is not None else self.TAGS
+        self._buf = ""
+        self._in_block = None  # tag name while inside a block, else None
+
+    def feed(self, text):
+        """Add streamed text; return the part that is safe to emit."""
+        self._buf += text
+        out = []
+        while self._buf:
+            if self._in_block:
+                close = f"</{self._in_block}>"
+                idx = self._buf.find(close)
+                if idx == -1:
+                    # Discard block text, keeping only a tail that could be
+                    # the start of the close tag split across chunks.
+                    keep = self._partial_suffix_len(self._buf, close)
+                    self._buf = self._buf[len(self._buf) - keep:] if keep else ""
+                    break
+                self._buf = self._buf[idx + len(close):]
+                self._in_block = None
+                continue
+            lt = self._buf.find("<")
+            if lt == -1:
+                out.append(self._buf)
+                self._buf = ""
+                break
+            out.append(self._buf[:lt])
+            self._buf = self._buf[lt:]
+            opened = False
+            possible_prefix = False
+            for tag in self._tags:
+                open_tag = f"<{tag}>"
+                if self._buf.startswith(open_tag):
+                    self._buf = self._buf[len(open_tag):]
+                    self._in_block = tag
+                    opened = True
+                    break
+                if open_tag.startswith(self._buf):
+                    possible_prefix = True
+            if opened:
+                continue
+            if possible_prefix:
+                break  # hold until more text disambiguates
+            out.append("<")
+            self._buf = self._buf[1:]
+        return "".join(out)
+
+    def flush(self):
+        """Release held text at stream end (unless inside an open block)."""
+        tail = "" if self._in_block else self._buf
+        self._buf = ""
+        self._in_block = None
+        return tail
+
+    @staticmethod
+    def _partial_suffix_len(buf, token):
+        """Longest k < len(token) with buf ending in token's first k chars."""
+        for k in range(min(len(buf), len(token) - 1), 0, -1):
+            if buf.endswith(token[:k]):
+                return k
+        return 0
+
+
+def _streaming_generator(job_id, payload, model_label, is_text_prompt, think):
+    """Yield SSE chunks from llama-server for RunPod streaming responses.
+
+    <persona>/<plan> blocks are stripped from the streamed text via
+    _StreamTagFilter, mirroring the unconditional _strip_meta() pass on
+    non-streaming responses. When think=False, <think> blocks and delta
+    reasoning_content are stripped too, mirroring _strip_reasoning().
+    """
+    tags = _StreamTagFilter.TAGS if think else _StreamTagFilter.TAGS + ("think",)
+    tag_filter = _StreamTagFilter(tags)
     try:
         for chunk in _stream_chat_completion(payload):
+            try:
+                delta = chunk["choices"][0]["delta"]
+                content = delta.get("content", "")
+            except (KeyError, IndexError, AttributeError, TypeError):
+                delta, content = None, ""
+            if delta is not None and not think:
+                delta.pop("reasoning_content", None)
             if is_text_prompt:
-                try:
-                    content = chunk["choices"][0]["delta"].get("content", "")
-                except (KeyError, IndexError, AttributeError):
-                    content = ""
-                if content:
-                    yield {"response": content}
+                emit = tag_filter.feed(content) if content else ""
+                if emit:
+                    yield {"response": emit}
             else:
+                if delta is not None and content:
+                    delta["content"] = tag_filter.feed(content)
                 chunk["model"] = model_label
                 yield chunk
+        tail = tag_filter.flush()
+        if tail:
+            if is_text_prompt:
+                yield {"response": tail}
+            else:
+                yield {
+                    "choices": [{"index": 0, "delta": {"content": tail}}],
+                    "model": model_label,
+                    "object": "chat.completion.chunk",
+                }
     except Exception as e:
         _log_with_job("error", job_id, "Streaming error: %s", e, exc_info=True)
         yield {"error": {"message": "Streaming error occurred", "type": "server_error"}}
@@ -357,7 +515,9 @@ def handler(job):
                 "Streaming (think=%s, model=%s, max_tokens=%d, n_messages=%d)",
                 think, model_label, max_tokens, len(messages),
             )
-            return _streaming_generator(job_id, payload, model_label, is_text_prompt)
+            return _streaming_generator(
+                job_id, payload, model_label, is_text_prompt, think
+            )
 
         _log_with_job(
             "info", job_id,
@@ -380,6 +540,7 @@ def handler(job):
 
         if not think:
             _strip_reasoning(result)
+        _strip_meta(result)
 
         if is_text_prompt:
             choices = result.get("choices")

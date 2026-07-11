@@ -74,6 +74,126 @@ class StripThinkTagsTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# _strip_persona_tags + persona-instruction default system prompt
+# ---------------------------------------------------------------------------
+class StripPersonaTagsTests(unittest.TestCase):
+    def test_removes_complete_block(self):
+        self.assertEqual(
+            H._strip_persona_tags("<persona>You are an expert.</persona>answer"),
+            "answer",
+        )
+
+    def test_removes_unclosed_block_to_end(self):
+        self.assertEqual(H._strip_persona_tags("answer<persona>dangling"), "answer")
+
+    def test_keeps_text_after_orphan_close(self):
+        self.assertEqual(H._strip_persona_tags("leftover</persona>final"), "final")
+
+    def test_no_tags_is_unchanged(self):
+        self.assertEqual(H._strip_persona_tags("just an answer"), "just an answer")
+
+
+class StripPlanTagsTests(unittest.TestCase):
+    def test_removes_complete_block(self):
+        self.assertEqual(
+            H._strip_plan_tags("<plan>1. think 2. answer</plan>answer"), "answer"
+        )
+
+    def test_removes_unclosed_block_to_end(self):
+        self.assertEqual(H._strip_plan_tags("answer<plan>dangling"), "answer")
+
+    def test_keeps_text_after_orphan_close(self):
+        self.assertEqual(H._strip_plan_tags("leftover</plan>final"), "final")
+
+    def test_no_tags_is_unchanged(self):
+        self.assertEqual(H._strip_plan_tags("just an answer"), "just an answer")
+
+
+class PersonaDefaultSystemPromptTests(unittest.TestCase):
+    def test_default_system_prompt_combines_persona_and_plan(self):
+        self.assertIn(H.PERSONA_INSTRUCTION, H.DEFAULT_SYSTEM_PROMPT)
+        self.assertIn(H.PLAN_INSTRUCTION, H.DEFAULT_SYSTEM_PROMPT)
+
+    def test_persona_instruction_references_enclosed_tags(self):
+        self.assertIn("<persona>", H.PERSONA_INSTRUCTION)
+        self.assertIn("</persona>", H.PERSONA_INSTRUCTION)
+
+    def test_plan_instruction_references_enclosed_tags(self):
+        self.assertIn("<plan>", H.PLAN_INSTRUCTION)
+        self.assertIn("</plan>", H.PLAN_INSTRUCTION)
+
+    @patch.object(H, "_server_chat_completion")
+    def test_text_prompt_without_system_prompt_gets_persona_instruction(
+        self, mock_chat
+    ):
+        mock_chat.return_value = _chat_result("ok")
+        handler({"id": "j", "input": {"prompt": "hi"}})
+        payload = mock_chat.call_args[0][0]
+        self.assertIn("<persona>", payload["messages"][0]["content"])
+
+    @patch.object(H, "_server_chat_completion")
+    def test_caller_system_prompt_is_not_replaced(self, mock_chat):
+        mock_chat.return_value = _chat_result("ok")
+        handler({"id": "j", "input": {"prompt": "hi", "system_prompt": "be terse"}})
+        payload = mock_chat.call_args[0][0]
+        self.assertEqual(payload["messages"][0]["content"], "be terse")
+
+    @patch.object(H, "_server_chat_completion")
+    def test_persona_block_stripped_from_text_response(self, mock_chat):
+        mock_chat.return_value = _chat_result(
+            "<persona>You are an expert in tests.</persona>final"
+        )
+        out = handler({"id": "j", "input": {"prompt": "hi"}})
+        self.assertEqual(out, {"response": "final"})
+
+    @patch.object(H, "_server_chat_completion")
+    def test_persona_stripped_even_when_think_true(self, mock_chat):
+        mock_chat.return_value = _chat_result(
+            "<persona>expert</persona><think>plan</think>answer"
+        )
+        out = handler({"id": "j", "input": {"prompt": "hi", "think": True}})
+        self.assertEqual(out, {"response": "<think>plan</think>answer"})
+
+    @patch.object(H, "_server_chat_completion")
+    def test_persona_block_stripped_from_chat_response(self, mock_chat):
+        mock_chat.return_value = _chat_result("<persona>expert</persona>done")
+        out = handler(
+            {"id": "j", "input": {"messages": [{"role": "user", "content": "hi"}]}}
+        )
+        self.assertEqual(out["choices"][0]["message"]["content"], "done")
+
+    @patch.object(H, "_server_chat_completion")
+    def test_plan_block_stripped_from_text_response(self, mock_chat):
+        mock_chat.return_value = _chat_result("<plan>1. answer</plan>final")
+        out = handler({"id": "j", "input": {"prompt": "hi"}})
+        self.assertEqual(out, {"response": "final"})
+
+    @patch.object(H, "_server_chat_completion")
+    def test_plan_stripped_even_when_think_true(self, mock_chat):
+        mock_chat.return_value = _chat_result(
+            "<plan>steps</plan><think>plan</think>answer"
+        )
+        out = handler({"id": "j", "input": {"prompt": "hi", "think": True}})
+        self.assertEqual(out, {"response": "<think>plan</think>answer"})
+
+    @patch.object(H, "_server_chat_completion")
+    def test_plan_block_stripped_from_chat_response(self, mock_chat):
+        mock_chat.return_value = _chat_result("<plan>steps</plan>done")
+        out = handler(
+            {"id": "j", "input": {"messages": [{"role": "user", "content": "hi"}]}}
+        )
+        self.assertEqual(out["choices"][0]["message"]["content"], "done")
+
+    @patch.object(H, "_server_chat_completion")
+    def test_persona_and_plan_blocks_both_stripped(self, mock_chat):
+        mock_chat.return_value = _chat_result(
+            "<persona>expert</persona><plan>1. do it</plan>final"
+        )
+        out = handler({"id": "j", "input": {"prompt": "hi"}})
+        self.assertEqual(out, {"response": "final"})
+
+
+# ---------------------------------------------------------------------------
 # _validate_messages
 # ---------------------------------------------------------------------------
 class ValidateMessagesTests(unittest.TestCase):
@@ -382,6 +502,156 @@ class HandlerStreamingTests(unittest.TestCase):
         chunks = list(out)
         self.assertEqual(chunks[0]["model"], "gemma-4-e2b-it")
         self.assertIn("choices", chunks[0])
+
+
+# ---------------------------------------------------------------------------
+# _StreamTagFilter — incremental <persona>/<plan> stripping for streams
+# ---------------------------------------------------------------------------
+class StreamTagFilterTests(unittest.TestCase):
+    def test_plain_text_passes_through(self):
+        f = H._StreamTagFilter()
+        self.assertEqual(f.feed("just an answer"), "just an answer")
+        self.assertEqual(f.flush(), "")
+
+    def test_complete_block_in_one_feed_is_stripped(self):
+        f = H._StreamTagFilter()
+        self.assertEqual(f.feed("<persona>expert</persona>answer"), "answer")
+        self.assertEqual(f.flush(), "")
+
+    def test_block_split_across_feeds_is_stripped(self):
+        f = H._StreamTagFilter()
+        out = f.feed("<perso") + f.feed("na>secret</perso") + f.feed("na>after")
+        self.assertEqual(out, "after")
+        self.assertEqual(f.flush(), "")
+
+    def test_lookalike_tag_is_released(self):
+        f = H._StreamTagFilter()
+        out = f.feed("<per") + f.feed("fect> answer")
+        self.assertEqual(out, "<perfect> answer")
+        self.assertEqual(f.flush(), "")
+
+    def test_dangling_open_block_is_suppressed(self):
+        f = H._StreamTagFilter()
+        self.assertEqual(f.feed("before<plan>never closed"), "before")
+        self.assertEqual(f.flush(), "")
+
+    def test_partial_prefix_at_stream_end_is_released_by_flush(self):
+        f = H._StreamTagFilter()
+        self.assertEqual(f.feed("answer<pl"), "answer")
+        self.assertEqual(f.flush(), "<pl")
+
+    def test_both_tags_stripped_in_sequence(self):
+        f = H._StreamTagFilter()
+        self.assertEqual(
+            f.feed("<persona>p</persona><plan>1. q</plan>done"), "done"
+        )
+
+
+class HandlerStreamingMetaStripTests(unittest.TestCase):
+    @patch.object(H, "_stream_chat_completion")
+    def test_text_prompt_stream_strips_persona_block_across_chunks(
+        self, mock_stream
+    ):
+        mock_stream.return_value = iter([
+            {"choices": [{"delta": {"content": "<perso"}}]},
+            {"choices": [{"delta": {"content": "na>expert</persona>Hel"}}]},
+            {"choices": [{"delta": {"content": "lo"}}]},
+        ])
+        out = handler({"id": "j", "input": {"prompt": "hi", "stream": True}})
+        text = "".join(c["response"] for c in out)
+        self.assertEqual(text, "Hello")
+
+    @patch.object(H, "_stream_chat_completion")
+    def test_text_prompt_stream_strips_plan_block(self, mock_stream):
+        mock_stream.return_value = iter([
+            {"choices": [{"delta": {"content": "<plan>1. answer</plan>final"}}]},
+        ])
+        out = handler({"id": "j", "input": {"prompt": "hi", "stream": True}})
+        text = "".join(c["response"] for c in out)
+        self.assertEqual(text, "final")
+
+    @patch.object(H, "_stream_chat_completion")
+    def test_text_prompt_stream_flushes_held_tail(self, mock_stream):
+        mock_stream.return_value = iter([
+            {"choices": [{"delta": {"content": "answer<pl"}}]},
+        ])
+        out = handler({"id": "j", "input": {"prompt": "hi", "stream": True}})
+        text = "".join(c["response"] for c in out)
+        self.assertEqual(text, "answer<pl")
+
+    @patch.object(H, "_stream_chat_completion")
+    def test_chat_stream_strips_persona_from_deltas(self, mock_stream):
+        mock_stream.return_value = iter([
+            {"choices": [{"delta": {"content": "<persona>x</persona>Hi"}}]},
+        ])
+        out = handler({"id": "j", "input": {
+            "messages": [{"role": "user", "content": "hi"}], "stream": True}})
+        chunks = list(out)
+        self.assertEqual(chunks[0]["choices"][0]["delta"]["content"], "Hi")
+
+    @patch.object(H, "_stream_chat_completion")
+    def test_chat_stream_flushes_held_tail_as_final_chunk(self, mock_stream):
+        mock_stream.return_value = iter([
+            {"choices": [{"delta": {"content": "Hi<pl"}}]},
+        ])
+        out = handler({"id": "j", "input": {
+            "messages": [{"role": "user", "content": "hi"}], "stream": True}})
+        chunks = list(out)
+        self.assertEqual(chunks[0]["choices"][0]["delta"]["content"], "Hi")
+        self.assertEqual(chunks[-1]["choices"][0]["delta"]["content"], "<pl")
+
+    def test_filter_accepts_custom_tags(self):
+        f = H._StreamTagFilter(("think",))
+        self.assertEqual(f.feed("<think>x</think>ok"), "ok")
+        # persona is not in this filter's tag set, so it passes through
+        self.assertEqual(f.feed("<persona>p</persona>"), "<persona>p</persona>")
+
+    @patch.object(H, "_stream_chat_completion")
+    def test_text_prompt_stream_strips_think_when_think_false(self, mock_stream):
+        mock_stream.return_value = iter([
+            {"choices": [{"delta": {"content": "<thi"}}]},
+            {"choices": [{"delta": {"content": "nk>reasoning</think>Hel"}}]},
+            {"choices": [{"delta": {"content": "lo"}}]},
+        ])
+        out = handler({"id": "j", "input": {"prompt": "hi", "stream": True}})
+        text = "".join(c["response"] for c in out)
+        self.assertEqual(text, "Hello")
+
+    @patch.object(H, "_stream_chat_completion")
+    def test_text_prompt_stream_keeps_think_when_think_true(self, mock_stream):
+        mock_stream.return_value = iter([
+            {"choices": [{"delta": {"content": "<think>x</think>hi"}}]},
+        ])
+        out = handler(
+            {"id": "j", "input": {"prompt": "hi", "stream": True, "think": True}}
+        )
+        text = "".join(c["response"] for c in out)
+        self.assertEqual(text, "<think>x</think>hi")
+
+    @patch.object(H, "_stream_chat_completion")
+    def test_think_true_stream_still_strips_persona(self, mock_stream):
+        mock_stream.return_value = iter([
+            {"choices": [{"delta": {"content": "<persona>x</persona>hi"}}]},
+        ])
+        out = handler(
+            {"id": "j", "input": {"prompt": "hi", "stream": True, "think": True}}
+        )
+        text = "".join(c["response"] for c in out)
+        self.assertEqual(text, "hi")
+
+    @patch.object(H, "_stream_chat_completion")
+    def test_chat_stream_strips_think_and_reasoning_when_think_false(
+        self, mock_stream
+    ):
+        mock_stream.return_value = iter([
+            {"choices": [{"delta": {"content": "<think>x</think>Hi",
+                                    "reasoning_content": "x"}}]},
+        ])
+        out = handler({"id": "j", "input": {
+            "messages": [{"role": "user", "content": "hi"}], "stream": True}})
+        delta = list(out)[0]["choices"][0]["delta"]
+        self.assertEqual(delta["content"], "Hi")
+        self.assertNotIn("reasoning_content", delta)
 
 
 # ---------------------------------------------------------------------------

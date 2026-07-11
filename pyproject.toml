@@ -1,0 +1,24 @@
+# Packaging for the client library ONLY (client/llm_api_client).
+# The server side (src/handler.py) is deployed via the Dockerfile and is
+# deliberately not part of this package.
+#
+# Consumers install it straight from git in their requirements file:
+#   llm-api-client @ git+https://github.com/<org>/llm-api-deploy@main
+
+[build-system]
+requires = ["setuptools>=68,<81"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llm-api-client"
+version = "0.1.0"
+description = "Stdlib-only Python client for the llm-api-deploy RunPod serverless LLM worker."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+# Intentionally empty: the client uses only the Python standard library.
+dependencies = []
+
+[tool.setuptools]
+package-dir = { "" = "client" }
+packages = ["llm_api_client"]
